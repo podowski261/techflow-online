@@ -1,39 +1,117 @@
 // ============================================================
-// ORION POS - SERVER
-// Port: 5000
+// TECHFLOW POS - SERVER POUR RENDER.COM
+// Port: dynamique selon Render
 // Timezone: Madagascar (UTC+3)
+// Database: PostgreSQL
 // ============================================================
 
 const express = require('express');
-const sqlite3 = require('sqlite3').verbose();
 const bcrypt = require('bcryptjs');
 const session = require('express-session');
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
+const { Pool } = require('pg');
 
 const app = express();
-const PORT = 5000;
+const PORT = process.env.PORT || 5000;
+
+// ============ POSTGRESQL CONFIG ============
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false
+});
+
+// Database helper functions
+const db = {
+  // Pour SELECT retournant plusieurs lignes
+  all: async (sql, params = []) => {
+    try {
+      const pgSql = convertSqliteToPg(sql);
+      const result = await pool.query(pgSql, params);
+      return result.rows;
+    } catch (error) {
+      console.error('DB all error:', error);
+      throw error;
+    }
+  },
+
+  // Pour SELECT retournant une seule ligne
+  get: async (sql, params = []) => {
+    try {
+      const pgSql = convertSqliteToPg(sql);
+      const result = await pool.query(pgSql, params);
+      return result.rows[0] || null;
+    } catch (error) {
+      console.error('DB get error:', error);
+      throw error;
+    }
+  },
+
+  // Pour INSERT, UPDATE, DELETE
+  run: async (sql, params = []) => {
+    try {
+      const pgSql = convertSqliteToPg(sql);
+      const result = await pool.query(pgSql, params);
+      return {
+        lastID: result.rows[0]?.id || 0,
+        changes: result.rowCount || 0
+      };
+    } catch (error) {
+      console.error('DB run error:', error);
+      throw error;
+    }
+  },
+
+  // Pour exécuter plusieurs requêtes en série
+  serialize: async (callback) => {
+    await callback();
+  }
+};
+
+// Convertir SQLite vers PostgreSQL
+function convertSqliteToPg(sql) {
+  if (!sql) return sql;
+  
+  let converted = sql
+    .replace(/AUTOINCREMENT/gi, 'SERIAL')
+    .replace(/\bINTEGER\s+PRIMARY\s+KEY\b/gi, 'SERIAL PRIMARY KEY')
+    .replace(/\bTEXT\b/gi, 'VARCHAR')
+    .replace(/\bREAL\b/gi, 'DECIMAL(10,2)')
+    .replace(/INSERT\s+OR\s+IGNORE/gi, 'INSERT')
+    .replace(/GROUP_CONCAT\(/gi, 'STRING_AGG(')
+    .replace(/datetime\('now'\)/gi, 'CURRENT_TIMESTAMP')
+    .replace(/'now'/gi, 'CURRENT_TIMESTAMP')
+    .replace(/DATE\(/gi, 'DATE_TRUNC(')
+    .replace(/strftime\('%Y-%m-%d',/gi, "TO_CHAR(")
+    .replace(/\)\)/g, ", 'YYYY-MM-DD')");
+
+  // Gérer les différences de fonctions de date
+  converted = converted.replace(/DATE\('([^']+)',\s*'([^']+)'\s*\)/g, "DATE '$1' + INTERVAL '$2'");
+  
+  return converted;
+}
 
 // ============ MADAGASCAR TIMEZONE HELPERS ============
-// Utilise l'heure locale du serveur (pas de conversion)
 function getMadagascarDateTime() {
     const now = new Date();
-    const year = now.getFullYear();
-    const month = String(now.getMonth() + 1).padStart(2, '0');
-    const day = String(now.getDate()).padStart(2, '0');
-    const hours = String(now.getHours()).padStart(2, '0');
-    const minutes = String(now.getMinutes()).padStart(2, '0');
-    const seconds = String(now.getSeconds()).padStart(2, '0');
+    const madagascarTime = new Date(now.getTime() + (3 * 60 * 60 * 1000));
+    const year = madagascarTime.getFullYear();
+    const month = String(madagascarTime.getMonth() + 1).padStart(2, '0');
+    const day = String(madagascarTime.getDate()).padStart(2, '0');
+    const hours = String(madagascarTime.getHours()).padStart(2, '0');
+    const minutes = String(madagascarTime.getMinutes()).padStart(2, '0');
+    const seconds = String(madagascarTime.getSeconds()).padStart(2, '0');
     
     return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
 }
 
 function getMadagascarDate() {
     const now = new Date();
-    const year = now.getFullYear();
-    const month = String(now.getMonth() + 1).padStart(2, '0');
-    const day = String(now.getDate()).padStart(2, '0');
+    const madagascarTime = new Date(now.getTime() + (3 * 60 * 60 * 1000));
+    const year = madagascarTime.getFullYear();
+    const month = String(madagascarTime.getMonth() + 1).padStart(2, '0');
+    const day = String(madagascarTime.getDate()).padStart(2, '0');
     
     return `${year}-${month}-${day}`;
 }
@@ -44,166 +122,199 @@ app.use(express.urlencoded({ extended: true }));
 app.use(express.static('public'));
 
 // Session configuration
-app.use(session({
-    secret: 'orion_pos_secret_key_2024',
-    resave: false,
-    saveUninitialized: false,
-    cookie: { 
-        secure: false,
-        maxAge: 24 * 60 * 60 * 1000
-    }
-}));
+const sessionConfig = {
+  secret: process.env.SESSION_SECRET || 'techflow_pos_secret_key_2024',
+  resave: false,
+  saveUninitialized: false,
+  cookie: { 
+    secure: process.env.NODE_ENV === 'production',
+    maxAge: 24 * 60 * 60 * 1000
+  }
+};
 
-// Multer configuration for image uploads
-const storage = multer.diskStorage({
-    destination: (req, file, cb) => {
-        const uploadDir = 'public/uploads';
-        if (!fs.existsSync(uploadDir)) {
-            fs.mkdirSync(uploadDir, { recursive: true });
-        }
-        cb(null, uploadDir);
-    },
-    filename: (req, file, cb) => {
-        const uniqueName = Date.now() + '-' + Math.round(Math.random() * 1E9);
-        cb(null, uniqueName + path.extname(file.originalname));
-    }
-});
-const upload = multer({ storage });
+if (process.env.NODE_ENV === 'production') {
+  app.set('trust proxy', 1);
+  sessionConfig.cookie.secure = true;
+}
 
-// ============ DATABASE ============
-const db = new sqlite3.Database('./database.sqlite', (err) => {
-    if (err) console.error('❌ Erreur connexion DB:', err);
-    else console.log('✅ Base de données connectée');
+app.use(session(sessionConfig));
+
+// Multer configuration (mémoire pour Render)
+const storage = multer.memoryStorage();
+const upload = multer({ 
+  storage,
+  limits: {
+    fileSize: 5 * 1024 * 1024 // 5MB max
+  }
 });
 
-// Create tables
-db.serialize(() => {
+// ============ INITIALIZE DATABASE ============
+async function initializeDatabase() {
+  try {
+    console.log('🔄 Initialisation de la base de données PostgreSQL...');
+
     // Users table
-    db.run(`CREATE TABLE IF NOT EXISTS users (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        username TEXT UNIQUE NOT NULL,
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS users (
+        id SERIAL PRIMARY KEY,
+        username VARCHAR(50) UNIQUE NOT NULL,
         password TEXT NOT NULL,
-        role TEXT DEFAULT 'caissier',
-        full_name TEXT,
-        created_at TEXT,
+        role VARCHAR(20) DEFAULT 'caissier',
+        full_name VARCHAR(100),
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         is_default INTEGER DEFAULT 0
-    )`);
+      )
+    `);
 
     // Products table
-    db.run(`CREATE TABLE IF NOT EXISTS products (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        name TEXT NOT NULL,
-        category TEXT,
-        purchase_price REAL DEFAULT 0,
-        sale_price REAL NOT NULL,
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS products (
+        id SERIAL PRIMARY KEY,
+        name VARCHAR(200) NOT NULL,
+        category VARCHAR(100),
+        purchase_price DECIMAL(10,2) DEFAULT 0,
+        sale_price DECIMAL(10,2) NOT NULL,
         quantity INTEGER DEFAULT 0,
         min_stock INTEGER DEFAULT 5,
         image TEXT,
-        barcode TEXT,
-        created_at TEXT,
-        updated_at TEXT
-    )`);
+        barcode VARCHAR(50),
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
 
     // Clients table
-    db.run(`CREATE TABLE IF NOT EXISTS clients (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        name TEXT NOT NULL,
-        phone TEXT,
-        email TEXT,
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS clients (
+        id SERIAL PRIMARY KEY,
+        name VARCHAR(200) NOT NULL,
+        phone VARCHAR(20),
+        email VARCHAR(100),
         address TEXT,
-        created_at TEXT
-    )`);
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
 
     // Sales table
-    db.run(`CREATE TABLE IF NOT EXISTS sales (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        invoice_number TEXT UNIQUE NOT NULL,
-        client_id INTEGER,
-        user_id INTEGER,
-        subtotal REAL,
-        discount_type TEXT,
-        discount_value REAL DEFAULT 0,
-        total REAL,
-        payment_method TEXT DEFAULT 'cash',
-        created_at TEXT,
-        FOREIGN KEY (client_id) REFERENCES clients(id),
-        FOREIGN KEY (user_id) REFERENCES users(id)
-    )`);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS sales (
+        id SERIAL PRIMARY KEY,
+        invoice_number VARCHAR(50) UNIQUE NOT NULL,
+        client_id INTEGER REFERENCES clients(id),
+        user_id INTEGER REFERENCES users(id),
+        subtotal DECIMAL(10,2),
+        discount_type VARCHAR(20),
+        discount_value DECIMAL(10,2) DEFAULT 0,
+        total DECIMAL(10,2),
+        payment_method VARCHAR(20) DEFAULT 'cash',
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
 
     // Sale items table
-    db.run(`CREATE TABLE IF NOT EXISTS sale_items (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        sale_id INTEGER,
-        product_id INTEGER,
-        product_name TEXT,
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS sale_items (
+        id SERIAL PRIMARY KEY,
+        sale_id INTEGER REFERENCES sales(id) ON DELETE CASCADE,
+        product_id INTEGER REFERENCES products(id),
+        product_name VARCHAR(200),
         quantity INTEGER,
-        unit_price REAL,
-        total REAL,
-        FOREIGN KEY (sale_id) REFERENCES sales(id),
-        FOREIGN KEY (product_id) REFERENCES products(id)
-    )`);
+        unit_price DECIMAL(10,2),
+        total DECIMAL(10,2)
+      )
+    `);
 
     // Stock movements table
-    db.run(`CREATE TABLE IF NOT EXISTS stock_movements (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        product_id INTEGER,
-        product_name TEXT,
-        movement_type TEXT,
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS stock_movements (
+        id SERIAL PRIMARY KEY,
+        product_id INTEGER REFERENCES products(id),
+        product_name VARCHAR(200),
+        movement_type VARCHAR(10),
         quantity INTEGER,
         reason TEXT,
-        user_id INTEGER,
-        created_at TEXT,
-        FOREIGN KEY (product_id) REFERENCES products(id),
-        FOREIGN KEY (user_id) REFERENCES users(id)
-    )`);
+        user_id INTEGER REFERENCES users(id),
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
 
     // Expenses table
-    db.run(`CREATE TABLE IF NOT EXISTS expenses (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS expenses (
+        id SERIAL PRIMARY KEY,
         description TEXT NOT NULL,
-        amount REAL NOT NULL,
-        type TEXT DEFAULT 'realized',
-        category TEXT,
-        status TEXT DEFAULT 'pending',
-        created_at TEXT
-    )`);
+        amount DECIMAL(10,2) NOT NULL,
+        type VARCHAR(20) DEFAULT 'realized',
+        category VARCHAR(100),
+        status VARCHAR(20) DEFAULT 'pending',
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
 
     // Financial goals table
-    db.run(`CREATE TABLE IF NOT EXISTS financial_goals (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        name TEXT NOT NULL,
-        target_amount REAL NOT NULL,
-        current_amount REAL DEFAULT 0,
-        deadline TEXT,
-        status TEXT DEFAULT 'active',
-        created_at TEXT
-    )`);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS financial_goals (
+        id SERIAL PRIMARY KEY,
+        name VARCHAR(200) NOT NULL,
+        target_amount DECIMAL(10,2) NOT NULL,
+        current_amount DECIMAL(10,2) DEFAULT 0,
+        deadline DATE,
+        status VARCHAR(20) DEFAULT 'active',
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
 
     // Company config table
-    db.run(`CREATE TABLE IF NOT EXISTS company_config (
-        id INTEGER PRIMARY KEY,
-        name TEXT DEFAULT 'ORION POS',
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS company_config (
+        id INTEGER PRIMARY KEY DEFAULT 1,
+        name VARCHAR(200) DEFAULT 'TechFlow POS',
         logo TEXT,
         address TEXT,
-        phone TEXT,
-        email TEXT,
-        website TEXT,
+        phone VARCHAR(20),
+        email VARCHAR(100),
+        website VARCHAR(200),
         invoice_header TEXT,
         invoice_footer TEXT DEFAULT 'Misaotra tompoko!',
-        currency TEXT DEFAULT 'Ar',
-        tax_rate REAL DEFAULT 0
-    )`);
+        currency VARCHAR(10) DEFAULT 'Ar',
+        tax_rate DECIMAL(5,2) DEFAULT 0
+      )
+    `);
 
-    // Insert default admin with Madagascar time
+    // Insert default admin
     const defaultPassword = bcrypt.hashSync('admin_26', 10);
     const now = getMadagascarDateTime();
     
-    db.run(`INSERT OR IGNORE INTO users (username, password, role, full_name, is_default, created_at) 
-            VALUES ('admin', ?, 'admin', 'Administrateur', 1, ?)`, [defaultPassword, now]);
+    const adminExists = await pool.query(
+      "SELECT id FROM users WHERE username = 'admin'"
+    );
+    
+    if (adminExists.rowCount === 0) {
+      await pool.query(
+        `INSERT INTO users (username, password, role, full_name, is_default, created_at) 
+         VALUES ($1, $2, $3, $4, $5, $6)`,
+        ['admin', defaultPassword, 'admin', 'Administrateur', 1, now]
+      );
+      console.log('✅ Admin par défaut créé');
+    }
 
     // Insert default company config
-    db.run(`INSERT OR IGNORE INTO company_config (id, name) VALUES (1, 'ORION POS')`);
-});
+    const configExists = await pool.query(
+      "SELECT id FROM company_config WHERE id = 1"
+    );
+    
+    if (configExists.rowCount === 0) {
+      await pool.query(
+        `INSERT INTO company_config (id, name) VALUES (1, 'TechFlow POS')`
+      );
+      console.log('✅ Configuration société créée');
+    }
+
+    console.log('✅ Base de données PostgreSQL initialisée avec succès');
+  } catch (error) {
+    console.error('❌ Erreur initialisation DB:', error);
+  }
+}
 
 // ============ AUTH MIDDLEWARE ============
 const requireAuth = (req, res, next) => {
@@ -222,17 +333,39 @@ const requireAdmin = (req, res, next) => {
     }
 };
 
+// ============ HEALTH CHECK ============
+app.get('/health', async (req, res) => {
+  try {
+    await pool.query('SELECT 1');
+    res.status(200).json({ 
+      status: 'OK', 
+      app: 'TechFlow POS',
+      database: 'PostgreSQL',
+      timestamp: new Date().toISOString(),
+      environment: process.env.NODE_ENV || 'development'
+    });
+  } catch (error) {
+    res.status(500).json({ 
+      status: 'ERROR', 
+      error: error.message 
+    });
+  }
+});
+
 // ============ AUTH ROUTES ============
-app.post('/api/login', (req, res) => {
-    const { username, password } = req.body;
-    
-    if (!username || !password) {
-        return res.status(400).json({ error: 'Identifiant et mot de passe requis' });
-    }
-    
-    db.get('SELECT * FROM users WHERE username = ?', [username], (err, user) => {
-        if (err) return res.status(500).json({ error: 'Erreur serveur' });
-        if (!user) return res.status(401).json({ error: 'Identifiants incorrects' });
+app.post('/api/login', async (req, res) => {
+    try {
+        const { username, password } = req.body;
+        
+        if (!username || !password) {
+            return res.status(400).json({ error: 'Identifiant et mot de passe requis' });
+        }
+        
+        const user = await db.get('SELECT * FROM users WHERE username = $1', [username]);
+        
+        if (!user) {
+            return res.status(401).json({ error: 'Identifiants incorrects' });
+        }
         
         if (bcrypt.compareSync(password, user.password)) {
             req.session.user = {
@@ -245,7 +378,10 @@ app.post('/api/login', (req, res) => {
         } else {
             res.status(401).json({ error: 'Identifiants incorrects' });
         }
-    });
+    } catch (error) {
+        console.error('Login error:', error);
+        res.status(500).json({ error: 'Erreur serveur' });
+    }
 });
 
 app.post('/api/logout', (req, res) => {
@@ -262,285 +398,326 @@ app.get('/api/session', (req, res) => {
 });
 
 // ============ USERS ROUTES ============
-app.get('/api/users', requireAuth, requireAdmin, (req, res) => {
-    db.all('SELECT id, username, role, full_name, created_at, is_default FROM users ORDER BY created_at DESC', [], (err, rows) => {
-        if (err) return res.status(500).json({ error: err.message });
+app.get('/api/users', requireAuth, requireAdmin, async (req, res) => {
+    try {
+        const rows = await db.all(
+            'SELECT id, username, role, full_name, created_at, is_default FROM users ORDER BY created_at DESC'
+        );
         res.json(rows);
-    });
-});
-
-app.post('/api/users', requireAuth, requireAdmin, (req, res) => {
-    const { username, password, role, full_name } = req.body;
-    
-    if (!username || !password) {
-        return res.status(400).json({ error: 'Nom d\'utilisateur et mot de passe requis' });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
     }
-    
-    const hashedPassword = bcrypt.hashSync(password, 10);
-    const now = getMadagascarDateTime();
-    
-    db.run('INSERT INTO users (username, password, role, full_name, created_at) VALUES (?, ?, ?, ?, ?)',
-        [username, hashedPassword, role || 'caissier', full_name, now],
-        function(err) {
-            if (err) {
-                if (err.message.includes('UNIQUE')) {
-                    return res.status(400).json({ error: 'Ce nom d\'utilisateur existe déjà' });
-                }
-                return res.status(500).json({ error: err.message });
-            }
-            res.json({ id: this.lastID, success: true });
-        }
-    );
 });
 
-app.put('/api/users/:id', requireAuth, requireAdmin, (req, res) => {
-    const { username, password, role, full_name } = req.body;
-    
-    db.get('SELECT is_default FROM users WHERE id = ?', [req.params.id], (err, user) => {
-        if (err) return res.status(500).json({ error: err.message });
+app.post('/api/users', requireAuth, requireAdmin, async (req, res) => {
+    try {
+        const { username, password, role, full_name } = req.body;
+        
+        if (!username || !password) {
+            return res.status(400).json({ error: 'Nom d\'utilisateur et mot de passe requis' });
+        }
+        
+        const hashedPassword = bcrypt.hashSync(password, 10);
+        const now = getMadagascarDateTime();
+        
+        const result = await db.run(
+            'INSERT INTO users (username, password, role, full_name, created_at) VALUES ($1, $2, $3, $4, $5)',
+            [username, hashedPassword, role || 'caissier', full_name, now]
+        );
+        
+        res.json({ id: result.lastID, success: true });
+    } catch (error) {
+        if (error.code === '23505') { // Unique violation
+            return res.status(400).json({ error: 'Ce nom d\'utilisateur existe déjà' });
+        }
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.put('/api/users/:id', requireAuth, requireAdmin, async (req, res) => {
+    try {
+        const { username, password, role, full_name } = req.body;
+        
+        const user = await db.get('SELECT is_default FROM users WHERE id = $1', [req.params.id]);
         
         if (user && user.is_default === 1 && role !== 'admin') {
             return res.status(403).json({ error: 'Impossible de modifier le rôle de l\'admin par défaut' });
         }
         
-        let query, params;
         if (password) {
             const hashedPassword = bcrypt.hashSync(password, 10);
-            query = 'UPDATE users SET username = ?, password = ?, role = ?, full_name = ? WHERE id = ?';
-            params = [username, hashedPassword, role, full_name, req.params.id];
+            await db.run(
+                'UPDATE users SET username = $1, password = $2, role = $3, full_name = $4 WHERE id = $5',
+                [username, hashedPassword, role, full_name, req.params.id]
+            );
         } else {
-            query = 'UPDATE users SET username = ?, role = ?, full_name = ? WHERE id = ?';
-            params = [username, role, full_name, req.params.id];
+            await db.run(
+                'UPDATE users SET username = $1, role = $2, full_name = $3 WHERE id = $4',
+                [username, role, full_name, req.params.id]
+            );
         }
         
-        db.run(query, params, function(err) {
-            if (err) return res.status(500).json({ error: err.message });
-            res.json({ success: true });
-        });
-    });
+        res.json({ success: true });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
 });
 
-app.delete('/api/users/:id', requireAuth, requireAdmin, (req, res) => {
-    db.get('SELECT is_default FROM users WHERE id = ?', [req.params.id], (err, user) => {
-        if (err) return res.status(500).json({ error: err.message });
+app.delete('/api/users/:id', requireAuth, requireAdmin, async (req, res) => {
+    try {
+        const user = await db.get('SELECT is_default FROM users WHERE id = $1', [req.params.id]);
         
         if (user && user.is_default === 1) {
             return res.status(403).json({ error: 'Impossible de supprimer l\'admin par défaut' });
         }
         
-        db.run('DELETE FROM users WHERE id = ? AND is_default = 0', [req.params.id], function(err) {
-            if (err) return res.status(500).json({ error: err.message });
-            res.json({ success: true });
-        });
-    });
+        await db.run('DELETE FROM users WHERE id = $1 AND is_default = 0', [req.params.id]);
+        res.json({ success: true });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
 });
 
 // ============ PRODUCTS ROUTES ============
-app.get('/api/products', requireAuth, (req, res) => {
-    const isAdmin = req.session.user.role === 'admin';
-    const fields = isAdmin 
-        ? '*' 
-        : 'id, name, category, sale_price, quantity, min_stock, image, barcode';
-    
-    db.all(`SELECT ${fields} FROM products ORDER BY name`, [], (err, rows) => {
-        if (err) return res.status(500).json({ error: err.message });
+app.get('/api/products', requireAuth, async (req, res) => {
+    try {
+        const isAdmin = req.session.user.role === 'admin';
+        const fields = isAdmin 
+            ? '*' 
+            : 'id, name, category, sale_price, quantity, min_stock, image, barcode';
+        
+        const rows = await db.all(`SELECT ${fields} FROM products ORDER BY name`);
         res.json(rows);
-    });
-});
-
-app.get('/api/products/:id', requireAuth, (req, res) => {
-    const isAdmin = req.session.user.role === 'admin';
-    const fields = isAdmin 
-        ? '*' 
-        : 'id, name, category, sale_price, quantity, min_stock, image, barcode';
-    
-    db.get(`SELECT ${fields} FROM products WHERE id = ?`, [req.params.id], (err, row) => {
-        if (err) return res.status(500).json({ error: err.message });
-        if (!row) return res.status(404).json({ error: 'Produit non trouvé' });
-        res.json(row);
-    });
-});
-
-// POST new product - ADMIN ONLY
-app.post('/api/products', requireAuth, requireAdmin, upload.single('image'), (req, res) => {
-    const { name, category, purchase_price, sale_price, quantity, min_stock, barcode } = req.body;
-    
-    if (!name || !sale_price) {
-        return res.status(400).json({ error: 'Nom et prix de vente requis' });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
     }
-    
-    const image = req.file ? '/uploads/' + req.file.filename : null;
-    const now = getMadagascarDateTime();
-    
-    db.run(`INSERT INTO products (name, category, purchase_price, sale_price, quantity, min_stock, image, barcode, created_at, updated_at) 
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [name, category || '', purchase_price || 0, sale_price, quantity || 0, min_stock || 5, image, barcode || '', now, now],
-        function(err) {
-            if (err) return res.status(500).json({ error: err.message });
-            
-            const productId = this.lastID;
-            
-            // Log initial stock movement if quantity > 0
-            if (quantity && parseInt(quantity) > 0) {
-                db.run(`INSERT INTO stock_movements (product_id, product_name, movement_type, quantity, reason, user_id, created_at) 
-                        VALUES (?, ?, 'entry', ?, 'Stock initial', ?, ?)`,
-                    [productId, name, parseInt(quantity), req.session.user.id, now]
-                );
-            }
-            
-            res.json({ id: productId, success: true });
-        }
-    );
 });
 
-// PUT update product - ADMIN ONLY
-app.put('/api/products/:id', requireAuth, requireAdmin, upload.single('image'), (req, res) => {
-    const { name, category, purchase_price, sale_price, quantity, min_stock, barcode } = req.body;
-    const now = getMadagascarDateTime();
-    
-    db.get('SELECT * FROM products WHERE id = ?', [req.params.id], (err, oldProduct) => {
-        if (err) return res.status(500).json({ error: err.message });
-        if (!oldProduct) return res.status(404).json({ error: 'Produit non trouvé' });
+app.get('/api/products/:id', requireAuth, async (req, res) => {
+    try {
+        const isAdmin = req.session.user.role === 'admin';
+        const fields = isAdmin 
+            ? '*' 
+            : 'id, name, category, sale_price, quantity, min_stock, image, barcode';
+        
+        const row = await db.get(`SELECT ${fields} FROM products WHERE id = $1`, [req.params.id]);
+        
+        if (!row) {
+            return res.status(404).json({ error: 'Produit non trouvé' });
+        }
+        
+        res.json(row);
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.post('/api/products', requireAuth, requireAdmin, upload.single('image'), async (req, res) => {
+    try {
+        const { name, category, purchase_price, sale_price, quantity, min_stock, barcode } = req.body;
+        
+        if (!name || !sale_price) {
+            return res.status(400).json({ error: 'Nom et prix de vente requis' });
+        }
+        
+        let image = null;
+        if (req.file) {
+            // Stocker en base64 pour Render (pas de stockage de fichiers)
+            image = `data:${req.file.mimetype};base64,${req.file.buffer.toString('base64')}`;
+        }
+        
+        const now = getMadagascarDateTime();
+        
+        const result = await db.run(
+            `INSERT INTO products (name, category, purchase_price, sale_price, quantity, min_stock, image, barcode, created_at, updated_at) 
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+            [name, category || '', purchase_price || 0, sale_price, quantity || 0, min_stock || 5, image, barcode || '', now, now]
+        );
+        
+        const productId = result.lastID;
+        
+        // Log initial stock movement if quantity > 0
+        if (quantity && parseInt(quantity) > 0) {
+            await db.run(
+                `INSERT INTO stock_movements (product_id, product_name, movement_type, quantity, reason, user_id, created_at) 
+                 VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+                [productId, name, 'entry', parseInt(quantity), 'Stock initial', req.session.user.id, now]
+            );
+        }
+        
+        res.json({ id: productId, success: true });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.put('/api/products/:id', requireAuth, requireAdmin, upload.single('image'), async (req, res) => {
+    try {
+        const { name, category, purchase_price, sale_price, quantity, min_stock, barcode } = req.body;
+        const now = getMadagascarDateTime();
+        
+        const oldProduct = await db.get('SELECT * FROM products WHERE id = $1', [req.params.id]);
+        
+        if (!oldProduct) {
+            return res.status(404).json({ error: 'Produit non trouvé' });
+        }
         
         let image = oldProduct.image;
         if (req.file) {
-            image = '/uploads/' + req.file.filename;
+            image = `data:${req.file.mimetype};base64,${req.file.buffer.toString('base64')}`;
         }
         
         const newQuantity = parseInt(quantity) || 0;
         const oldQuantity = oldProduct.quantity || 0;
         
-        db.run(`UPDATE products SET name = ?, category = ?, purchase_price = ?, sale_price = ?, 
-                quantity = ?, min_stock = ?, image = ?, barcode = ?, updated_at = ? 
-                WHERE id = ?`,
-            [name, category || '', purchase_price || 0, sale_price, newQuantity, min_stock || 5, image, barcode || '', now, req.params.id],
-            function(err) {
-                if (err) return res.status(500).json({ error: err.message });
-                
-                // Log stock movement if quantity changed
-                if (newQuantity !== oldQuantity) {
-                    const diff = newQuantity - oldQuantity;
-                    const movementType = diff > 0 ? 'entry' : 'exit';
-                    db.run(`INSERT INTO stock_movements (product_id, product_name, movement_type, quantity, reason, user_id, created_at) 
-                            VALUES (?, ?, ?, ?, 'Ajustement admin', ?, ?)`,
-                        [req.params.id, name, movementType, Math.abs(diff), req.session.user.id, now]
-                    );
-                }
-                
-                res.json({ success: true });
-            }
+        await db.run(
+            `UPDATE products SET name = $1, category = $2, purchase_price = $3, sale_price = $4, 
+             quantity = $5, min_stock = $6, image = $7, barcode = $8, updated_at = $9 
+             WHERE id = $10`,
+            [name, category || '', purchase_price || 0, sale_price, newQuantity, min_stock || 5, image, barcode || '', now, req.params.id]
         );
-    });
-});
-
-// DELETE product - ADMIN ONLY
-app.delete('/api/products/:id', requireAuth, requireAdmin, (req, res) => {
-    db.run('DELETE FROM products WHERE id = ?', [req.params.id], function(err) {
-        if (err) return res.status(500).json({ error: err.message });
+        
+        // Log stock movement if quantity changed
+        if (newQuantity !== oldQuantity) {
+            const diff = newQuantity - oldQuantity;
+            const movementType = diff > 0 ? 'entry' : 'exit';
+            await db.run(
+                `INSERT INTO stock_movements (product_id, product_name, movement_type, quantity, reason, user_id, created_at) 
+                 VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+                [req.params.id, name, movementType, Math.abs(diff), 'Ajustement admin', req.session.user.id, now]
+            );
+        }
+        
         res.json({ success: true });
-    });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
 });
 
-// Quick stock add - ALL USERS CAN ADD STOCK
-app.post('/api/products/:id/add-stock', requireAuth, (req, res) => {
-    const { quantity } = req.body;
-    const now = getMadagascarDateTime();
-    
-    if (!quantity || parseInt(quantity) <= 0) {
-        return res.status(400).json({ error: 'Quantité invalide' });
+app.delete('/api/products/:id', requireAuth, requireAdmin, async (req, res) => {
+    try {
+        await db.run('DELETE FROM products WHERE id = $1', [req.params.id]);
+        res.json({ success: true });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
     }
-    
-    db.get('SELECT * FROM products WHERE id = ?', [req.params.id], (err, product) => {
-        if (err) return res.status(500).json({ error: err.message });
-        if (!product) return res.status(404).json({ error: 'Produit non trouvé' });
+});
+
+app.post('/api/products/:id/add-stock', requireAuth, async (req, res) => {
+    try {
+        const { quantity } = req.body;
+        const now = getMadagascarDateTime();
+        
+        if (!quantity || parseInt(quantity) <= 0) {
+            return res.status(400).json({ error: 'Quantité invalide' });
+        }
+        
+        const product = await db.get('SELECT * FROM products WHERE id = $1', [req.params.id]);
+        
+        if (!product) {
+            return res.status(404).json({ error: 'Produit non trouvé' });
+        }
         
         const addQty = parseInt(quantity);
         const newQuantity = (product.quantity || 0) + addQty;
         
-        db.run('UPDATE products SET quantity = ?, updated_at = ? WHERE id = ?',
-            [newQuantity, now, req.params.id],
-            function(err) {
-                if (err) return res.status(500).json({ error: err.message });
-                
-                db.run(`INSERT INTO stock_movements (product_id, product_name, movement_type, quantity, reason, user_id, created_at) 
-                        VALUES (?, ?, 'entry', ?, 'Réapprovisionnement', ?, ?)`,
-                    [req.params.id, product.name, addQty, req.session.user.id, now]
-                );
-                
-                res.json({ success: true, newQuantity });
-            }
+        await db.run(
+            'UPDATE products SET quantity = $1, updated_at = $2 WHERE id = $3',
+            [newQuantity, now, req.params.id]
         );
-    });
+        
+        await db.run(
+            `INSERT INTO stock_movements (product_id, product_name, movement_type, quantity, reason, user_id, created_at) 
+             VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+            [req.params.id, product.name, 'entry', addQty, 'Réapprovisionnement', req.session.user.id, now]
+        );
+        
+        res.json({ success: true, newQuantity });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
 });
 
 // ============ CLIENTS ROUTES ============
-app.get('/api/clients', requireAuth, (req, res) => {
-    db.all('SELECT * FROM clients ORDER BY name', [], (err, rows) => {
-        if (err) return res.status(500).json({ error: err.message });
+app.get('/api/clients', requireAuth, async (req, res) => {
+    try {
+        const rows = await db.all('SELECT * FROM clients ORDER BY name');
         res.json(rows);
-    });
-});
-
-app.get('/api/clients/:id', requireAuth, (req, res) => {
-    db.get('SELECT * FROM clients WHERE id = ?', [req.params.id], (err, client) => {
-        if (err) return res.status(500).json({ error: err.message });
-        if (!client) return res.status(404).json({ error: 'Client non trouvé' });
-        
-        db.all(`SELECT s.*, GROUP_CONCAT(si.product_name || ' x' || si.quantity) as items 
-                FROM sales s 
-                LEFT JOIN sale_items si ON s.id = si.sale_id 
-                WHERE s.client_id = ? 
-                GROUP BY s.id 
-                ORDER BY s.created_at DESC`,
-            [req.params.id],
-            (err, sales) => {
-                if (err) return res.status(500).json({ error: err.message });
-                res.json({ ...client, sales: sales || [] });
-            }
-        );
-    });
-});
-
-app.post('/api/clients', requireAuth, (req, res) => {
-    const { name, phone, email, address } = req.body;
-    
-    if (!name) {
-        return res.status(400).json({ error: 'Le nom est requis' });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
     }
-    
-    const now = getMadagascarDateTime();
-    
-    db.run('INSERT INTO clients (name, phone, email, address, created_at) VALUES (?, ?, ?, ?, ?)',
-        [name, phone || '', email || '', address || '', now],
-        function(err) {
-            if (err) return res.status(500).json({ error: err.message });
-            res.json({ id: this.lastID, success: true });
-        }
-    );
 });
 
-app.put('/api/clients/:id', requireAuth, (req, res) => {
-    const { name, phone, email, address } = req.body;
-    
-    db.run('UPDATE clients SET name = ?, phone = ?, email = ?, address = ? WHERE id = ?',
-        [name, phone || '', email || '', address || '', req.params.id],
-        function(err) {
-            if (err) return res.status(500).json({ error: err.message });
-            res.json({ success: true });
+app.get('/api/clients/:id', requireAuth, async (req, res) => {
+    try {
+        const client = await db.get('SELECT * FROM clients WHERE id = $1', [req.params.id]);
+        
+        if (!client) {
+            return res.status(404).json({ error: 'Client non trouvé' });
         }
-    );
+        
+        const sales = await db.all(
+            `SELECT s.*, STRING_AGG(si.product_name || ' x' || si.quantity, ', ') as items 
+             FROM sales s 
+             LEFT JOIN sale_items si ON s.id = si.sale_id 
+             WHERE s.client_id = $1 
+             GROUP BY s.id 
+             ORDER BY s.created_at DESC`,
+            [req.params.id]
+        );
+        
+        res.json({ ...client, sales: sales || [] });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
 });
 
-app.delete('/api/clients/:id', requireAuth, requireAdmin, (req, res) => {
-    db.run('DELETE FROM clients WHERE id = ?', [req.params.id], function(err) {
-        if (err) return res.status(500).json({ error: err.message });
+app.post('/api/clients', requireAuth, async (req, res) => {
+    try {
+        const { name, phone, email, address } = req.body;
+        
+        if (!name) {
+            return res.status(400).json({ error: 'Le nom est requis' });
+        }
+        
+        const now = getMadagascarDateTime();
+        
+        const result = await db.run(
+            'INSERT INTO clients (name, phone, email, address, created_at) VALUES ($1, $2, $3, $4, $5)',
+            [name, phone || '', email || '', address || '', now]
+        );
+        
+        res.json({ id: result.lastID, success: true });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.put('/api/clients/:id', requireAuth, async (req, res) => {
+    try {
+        const { name, phone, email, address } = req.body;
+        
+        await db.run(
+            'UPDATE clients SET name = $1, phone = $2, email = $3, address = $4 WHERE id = $5',
+            [name, phone || '', email || '', address || '', req.params.id]
+        );
+        
         res.json({ success: true });
-    });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.delete('/api/clients/:id', requireAuth, requireAdmin, async (req, res) => {
+    try {
+        await db.run('DELETE FROM clients WHERE id = $1', [req.params.id]);
+        res.json({ success: true });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
 });
 
 // ============ SALES ROUTES ============
-
-// Generate invoice number
 function generateInvoiceNumber() {
     const now = new Date();
     const madagascarTime = new Date(now.getTime() + (3 * 60 * 60 * 1000));
@@ -555,178 +732,228 @@ function generateInvoiceNumber() {
     return `FAC-${year}${month}${day}-${hour}${minute}${second}`;
 }
 
-app.get('/api/sales', requireAuth, (req, res) => {
-    const { period } = req.query;
-    const today = getMadagascarDate();
-    let dateFilter = '';
-    
-    if (period === 'today') {
-        dateFilter = `AND DATE(s.created_at) = '${today}'`;
-    } else if (period === 'week') {
-        dateFilter = `AND DATE(s.created_at) >= DATE('${today}', '-7 days')`;
-    } else if (period === 'month') {
-        dateFilter = `AND DATE(s.created_at) >= DATE('${today}', '-30 days')`;
-    }
-    
-    db.all(`SELECT s.*, c.name as client_name, u.username as user_name, u.full_name as user_full_name
-            FROM sales s 
-            LEFT JOIN clients c ON s.client_id = c.id 
-            LEFT JOIN users u ON s.user_id = u.id 
-            WHERE 1=1 ${dateFilter}
-            ORDER BY s.created_at DESC`, [],
-        (err, rows) => {
-            if (err) return res.status(500).json({ error: err.message });
-            res.json(rows);
-        }
-    );
-});
-
-app.get('/api/sales/:id', requireAuth, (req, res) => {
-    db.get(`SELECT s.*, c.name as client_name, c.phone as client_phone, u.username as user_name, u.full_name as user_full_name
-            FROM sales s 
-            LEFT JOIN clients c ON s.client_id = c.id 
-            LEFT JOIN users u ON s.user_id = u.id 
-            WHERE s.id = ?`, [req.params.id],
-        (err, sale) => {
-            if (err) return res.status(500).json({ error: err.message });
-            if (!sale) return res.status(404).json({ error: 'Vente non trouvée' });
-            
-            db.all('SELECT * FROM sale_items WHERE sale_id = ?', [req.params.id], (err, items) => {
-                if (err) return res.status(500).json({ error: err.message });
-                res.json({ ...sale, items: items || [] });
-            });
-        }
-    );
-});
-
-app.post('/api/sales', requireAuth, (req, res) => {
-    const { client_id, client_name, client_phone, items, subtotal, discount_type, discount_value, total, payment_method } = req.body;
-    
-    if (!items || items.length === 0) {
-        return res.status(400).json({ error: 'Le panier est vide' });
-    }
-    
-    const invoice_number = generateInvoiceNumber();
-    const now = getMadagascarDateTime();
-    
-    // Create or find client
-    const processClient = (callback) => {
-        if (client_id) {
-            callback(client_id);
-        } else if (client_name && client_name.trim()) {
-            db.run('INSERT INTO clients (name, phone, created_at) VALUES (?, ?, ?)', 
-                [client_name.trim(), client_phone || '', now],
-                function(err) {
-                    callback(err ? null : this.lastID);
-                }
-            );
-        } else {
-            callback(null);
-        }
-    };
-    
-    processClient((finalClientId) => {
-        db.run(`INSERT INTO sales (invoice_number, client_id, user_id, subtotal, discount_type, discount_value, total, payment_method, created_at) 
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-            [invoice_number, finalClientId, req.session.user.id, subtotal, discount_type || 'percent', discount_value || 0, total, payment_method || 'cash', now],
-            function(err) {
-                if (err) return res.status(500).json({ error: err.message });
-                
-                const saleId = this.lastID;
-                
-                // Insert sale items and update stock
-                items.forEach(item => {
-                    db.run(`INSERT INTO sale_items (sale_id, product_id, product_name, quantity, unit_price, total) 
-                            VALUES (?, ?, ?, ?, ?, ?)`,
-                        [saleId, item.id, item.name, item.quantity, item.price, item.quantity * item.price]
-                    );
-                    
-                    // Update product stock
-                    db.run('UPDATE products SET quantity = quantity - ?, updated_at = ? WHERE id = ?', 
-                        [item.quantity, now, item.id]);
-                    
-                    // Log stock movement
-                    db.run(`INSERT INTO stock_movements (product_id, product_name, movement_type, quantity, reason, user_id, created_at) 
-                            VALUES (?, ?, 'exit', ?, ?, ?, ?)`,
-                        [item.id, item.name, item.quantity, 'Vente ' + invoice_number, req.session.user.id, now]
-                    );
-                });
-                
-                res.json({ id: saleId, invoice_number, success: true });
-            }
-        );
-    });
-});
-
-app.delete('/api/sales/:id', requireAuth, requireAdmin, (req, res) => {
-    const now = getMadagascarDateTime();
-    
-    db.get('SELECT invoice_number FROM sales WHERE id = ?', [req.params.id], (err, sale) => {
-        if (err) return res.status(500).json({ error: err.message });
-        if (!sale) return res.status(404).json({ error: 'Vente non trouvée' });
+app.get('/api/sales', requireAuth, async (req, res) => {
+    try {
+        const { period } = req.query;
+        const today = getMadagascarDate();
+        let whereClause = 'WHERE 1=1';
         
-        // Restore stock before deleting
-        db.all('SELECT * FROM sale_items WHERE sale_id = ?', [req.params.id], (err, items) => {
-            if (err) return res.status(500).json({ error: err.message });
+        if (period === 'today') {
+            whereClause += ` AND DATE(s.created_at) = '${today}'`;
+        } else if (period === 'week') {
+            whereClause += ` AND s.created_at >= CURRENT_DATE - INTERVAL '7 days'`;
+        } else if (period === 'month') {
+            whereClause += ` AND s.created_at >= CURRENT_DATE - INTERVAL '30 days'`;
+        }
+        
+        const rows = await db.all(
+            `SELECT s.*, c.name as client_name, u.username as user_name, u.full_name as user_full_name
+             FROM sales s 
+             LEFT JOIN clients c ON s.client_id = c.id 
+             LEFT JOIN users u ON s.user_id = u.id 
+             ${whereClause}
+             ORDER BY s.created_at DESC`
+        );
+        
+        res.json(rows);
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.get('/api/sales/:id', requireAuth, async (req, res) => {
+    try {
+        const sale = await db.get(
+            `SELECT s.*, c.name as client_name, c.phone as client_phone, u.username as user_name, u.full_name as user_full_name
+             FROM sales s 
+             LEFT JOIN clients c ON s.client_id = c.id 
+             LEFT JOIN users u ON s.user_id = u.id 
+             WHERE s.id = $1`,
+            [req.params.id]
+        );
+        
+        if (!sale) {
+            return res.status(404).json({ error: 'Vente non trouvée' });
+        }
+        
+        const items = await db.all('SELECT * FROM sale_items WHERE sale_id = $1', [req.params.id]);
+        res.json({ ...sale, items: items || [] });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.post('/api/sales', requireAuth, async (req, res) => {
+    try {
+        const { client_id, client_name, client_phone, items, subtotal, discount_type, discount_value, total, payment_method } = req.body;
+        
+        if (!items || items.length === 0) {
+            return res.status(400).json({ error: 'Le panier est vide' });
+        }
+        
+        const invoice_number = generateInvoiceNumber();
+        const now = getMadagascarDateTime();
+        let finalClientId = client_id || null;
+        
+        // Create client if name provided
+        if (!client_id && client_name && client_name.trim()) {
+            const clientResult = await db.run(
+                'INSERT INTO clients (name, phone, created_at) VALUES ($1, $2, $3)',
+                [client_name.trim(), client_phone || '', now]
+            );
+            finalClientId = clientResult.lastID;
+        }
+        
+        // Start transaction
+        const client = await pool.connect();
+        
+        try {
+            await client.query('BEGIN');
             
-            items.forEach(item => {
-                db.run('UPDATE products SET quantity = quantity + ?, updated_at = ? WHERE id = ?', 
-                    [item.quantity, now, item.product_id]);
+            // Insert sale
+            const saleResult = await client.query(
+                `INSERT INTO sales (invoice_number, client_id, user_id, subtotal, discount_type, discount_value, total, payment_method, created_at) 
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id`,
+                [invoice_number, finalClientId, req.session.user.id, subtotal, discount_type || 'percent', discount_value || 0, total, payment_method || 'cash', now]
+            );
+            
+            const saleId = saleResult.rows[0].id;
+            
+            // Insert sale items and update stock
+            for (const item of items) {
+                await client.query(
+                    `INSERT INTO sale_items (sale_id, product_id, product_name, quantity, unit_price, total) 
+                     VALUES ($1, $2, $3, $4, $5, $6)`,
+                    [saleId, item.id, item.name, item.quantity, item.price, item.quantity * item.price]
+                );
+                
+                // Update product stock
+                await client.query(
+                    'UPDATE products SET quantity = quantity - $1, updated_at = $2 WHERE id = $3',
+                    [item.quantity, now, item.id]
+                );
+                
+                // Log stock movement
+                await client.query(
+                    `INSERT INTO stock_movements (product_id, product_name, movement_type, quantity, reason, user_id, created_at) 
+                     VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+                    [item.id, item.name, 'exit', item.quantity, 'Vente ' + invoice_number, req.session.user.id, now]
+                );
+            }
+            
+            await client.query('COMMIT');
+            res.json({ id: saleId, invoice_number, success: true });
+            
+        } catch (error) {
+            await client.query('ROLLBACK');
+            throw error;
+        } finally {
+            client.release();
+        }
+        
+    } catch (error) {
+        console.error('Sale creation error:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.delete('/api/sales/:id', requireAuth, requireAdmin, async (req, res) => {
+    try {
+        const now = getMadagascarDateTime();
+        
+        const sale = await db.get('SELECT invoice_number FROM sales WHERE id = $1', [req.params.id]);
+        
+        if (!sale) {
+            return res.status(404).json({ error: 'Vente non trouvée' });
+        }
+        
+        const client = await pool.connect();
+        
+        try {
+            await client.query('BEGIN');
+            
+            // Get sale items
+            const itemsResult = await client.query('SELECT * FROM sale_items WHERE sale_id = $1', [req.params.id]);
+            
+            // Restore stock
+            for (const item of itemsResult.rows) {
+                await client.query(
+                    'UPDATE products SET quantity = quantity + $1, updated_at = $2 WHERE id = $3',
+                    [item.quantity, now, item.product_id]
+                );
                 
                 // Log stock restoration
-                db.run(`INSERT INTO stock_movements (product_id, product_name, movement_type, quantity, reason, user_id, created_at) 
-                        VALUES (?, ?, 'entry', ?, ?, ?, ?)`,
-                    [item.product_id, item.product_name, item.quantity, 'Annulation vente ' + sale.invoice_number, req.session.user.id, now]
+                await client.query(
+                    `INSERT INTO stock_movements (product_id, product_name, movement_type, quantity, reason, user_id, created_at) 
+                     VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+                    [item.product_id, item.product_name, 'entry', item.quantity, 'Annulation vente ' + sale.invoice_number, req.session.user.id, now]
                 );
-            });
+            }
             
-            db.run('DELETE FROM sale_items WHERE sale_id = ?', [req.params.id]);
-            db.run('DELETE FROM sales WHERE id = ?', [req.params.id], function(err) {
-                if (err) return res.status(500).json({ error: err.message });
-                res.json({ success: true });
-            });
-        });
-    });
+            // Delete sale items
+            await client.query('DELETE FROM sale_items WHERE sale_id = $1', [req.params.id]);
+            
+            // Delete sale
+            await client.query('DELETE FROM sales WHERE id = $1', [req.params.id]);
+            
+            await client.query('COMMIT');
+            res.json({ success: true });
+            
+        } catch (error) {
+            await client.query('ROLLBACK');
+            throw error;
+        } finally {
+            client.release();
+        }
+        
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
 });
 
 // ============ STOCK MOVEMENTS ROUTES ============
-app.get('/api/stock-movements', requireAuth, (req, res) => {
-    const { period } = req.query;
-    const today = getMadagascarDate();
-    let dateFilter = '';
-    
-    if (period === 'today') {
-        dateFilter = `WHERE DATE(sm.created_at) = '${today}'`;
-    } else if (period === 'week') {
-        dateFilter = `WHERE DATE(sm.created_at) >= DATE('${today}', '-7 days')`;
-    } else if (period === 'month') {
-        dateFilter = `WHERE DATE(sm.created_at) >= DATE('${today}', '-30 days')`;
-    }
-    
-    db.all(`SELECT sm.*, u.username as user_name, u.full_name as user_full_name
-            FROM stock_movements sm 
-            LEFT JOIN users u ON sm.user_id = u.id 
-            ${dateFilter}
-            ORDER BY sm.created_at DESC`, [],
-        (err, rows) => {
-            if (err) return res.status(500).json({ error: err.message });
-            res.json(rows);
+app.get('/api/stock-movements', requireAuth, async (req, res) => {
+    try {
+        const { period } = req.query;
+        const today = getMadagascarDate();
+        let whereClause = '';
+        
+        if (period === 'today') {
+            whereClause = `WHERE DATE(sm.created_at) = '${today}'`;
+        } else if (period === 'week') {
+            whereClause = `WHERE sm.created_at >= CURRENT_DATE - INTERVAL '7 days'`;
+        } else if (period === 'month') {
+            whereClause = `WHERE sm.created_at >= CURRENT_DATE - INTERVAL '30 days'`;
         }
-    );
+        
+        const rows = await db.all(
+            `SELECT sm.*, u.username as user_name, u.full_name as user_full_name
+             FROM stock_movements sm 
+             LEFT JOIN users u ON sm.user_id = u.id 
+             ${whereClause}
+             ORDER BY sm.created_at DESC`
+        );
+        
+        res.json(rows);
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
 });
 
-// POST manual stock movement - ADMIN ONLY
-app.post('/api/stock-movements', requireAuth, requireAdmin, (req, res) => {
-    const { product_id, movement_type, quantity, reason } = req.body;
-    const now = getMadagascarDateTime();
-    
-    if (!product_id || !movement_type || !quantity) {
-        return res.status(400).json({ error: 'Données manquantes' });
-    }
-    
-    db.get('SELECT * FROM products WHERE id = ?', [product_id], (err, product) => {
-        if (err) return res.status(500).json({ error: err.message });
-        if (!product) return res.status(404).json({ error: 'Produit non trouvé' });
+app.post('/api/stock-movements', requireAuth, requireAdmin, async (req, res) => {
+    try {
+        const { product_id, movement_type, quantity, reason } = req.body;
+        const now = getMadagascarDateTime();
+        
+        if (!product_id || !movement_type || !quantity) {
+            return res.status(400).json({ error: 'Données manquantes' });
+        }
+        
+        const product = await db.get('SELECT * FROM products WHERE id = $1', [product_id]);
+        
+        if (!product) {
+            return res.status(404).json({ error: 'Produit non trouvé' });
+        }
         
         const qty = parseInt(quantity);
         let newQuantity;
@@ -740,269 +967,305 @@ app.post('/api/stock-movements', requireAuth, requireAdmin, (req, res) => {
             }
         }
         
-        db.run('UPDATE products SET quantity = ?, updated_at = ? WHERE id = ?',
-            [newQuantity, now, product_id],
-            function(err) {
-                if (err) return res.status(500).json({ error: err.message });
-                
-                db.run(`INSERT INTO stock_movements (product_id, product_name, movement_type, quantity, reason, user_id, created_at) 
-                        VALUES (?, ?, ?, ?, ?, ?, ?)`,
-                    [product_id, product.name, movement_type, qty, reason || 'Mouvement manuel', req.session.user.id, now],
-                    function(err) {
-                        if (err) return res.status(500).json({ error: err.message });
-                        res.json({ id: this.lastID, success: true, newQuantity });
-                    }
-                );
-            }
+        await db.run(
+            'UPDATE products SET quantity = $1, updated_at = $2 WHERE id = $3',
+            [newQuantity, now, product_id]
         );
-    });
+        
+        const result = await db.run(
+            `INSERT INTO stock_movements (product_id, product_name, movement_type, quantity, reason, user_id, created_at) 
+             VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+            [product_id, product.name, movement_type, qty, reason || 'Mouvement manuel', req.session.user.id, now]
+        );
+        
+        res.json({ id: result.lastID, success: true, newQuantity });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
 });
 
-// DELETE stock movement - ADMIN ONLY (restore stock)
-app.delete('/api/stock-movements/:id', requireAuth, requireAdmin, (req, res) => {
-    const now = getMadagascarDateTime();
-    
-    db.get('SELECT * FROM stock_movements WHERE id = ?', [req.params.id], (err, movement) => {
-        if (err) return res.status(500).json({ error: err.message });
-        if (!movement) return res.status(404).json({ error: 'Mouvement non trouvé' });
+app.delete('/api/stock-movements/:id', requireAuth, requireAdmin, async (req, res) => {
+    try {
+        const now = getMadagascarDateTime();
         
-        db.get('SELECT * FROM products WHERE id = ?', [movement.product_id], (err, product) => {
-            if (err) return res.status(500).json({ error: err.message });
-            
-            if (product) {
-                let newQuantity;
-                if (movement.movement_type === 'entry') {
-                    newQuantity = Math.max(0, (product.quantity || 0) - movement.quantity);
-                } else {
-                    newQuantity = (product.quantity || 0) + movement.quantity;
-                }
-                
-                db.run('UPDATE products SET quantity = ?, updated_at = ? WHERE id = ?',
-                    [newQuantity, now, movement.product_id]
-                );
+        const movement = await db.get('SELECT * FROM stock_movements WHERE id = $1', [req.params.id]);
+        
+        if (!movement) {
+            return res.status(404).json({ error: 'Mouvement non trouvé' });
+        }
+        
+        const product = await db.get('SELECT * FROM products WHERE id = $1', [movement.product_id]);
+        
+        if (product) {
+            let newQuantity;
+            if (movement.movement_type === 'entry') {
+                newQuantity = Math.max(0, (product.quantity || 0) - movement.quantity);
+            } else {
+                newQuantity = (product.quantity || 0) + movement.quantity;
             }
             
-            db.run('DELETE FROM stock_movements WHERE id = ?', [req.params.id], function(err) {
-                if (err) return res.status(500).json({ error: err.message });
-                res.json({ success: true });
-            });
-        });
-    });
+            await db.run(
+                'UPDATE products SET quantity = $1, updated_at = $2 WHERE id = $3',
+                [newQuantity, now, movement.product_id]
+            );
+        }
+        
+        await db.run('DELETE FROM stock_movements WHERE id = $1', [req.params.id]);
+        res.json({ success: true });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
 });
 
 // ============ DASHBOARD STATS ============
-app.get('/api/dashboard/stats', requireAuth, requireAdmin, (req, res) => {
-    const stats = {};
-    const today = getMadagascarDate();
-    
-    db.get(`SELECT COUNT(*) as count, COALESCE(SUM(total), 0) as revenue 
-            FROM sales 
-            WHERE DATE(created_at) = '${today}'`, [], (err, todayData) => {
-        if (err) return res.status(500).json({ error: err.message });
+app.get('/api/dashboard/stats', requireAuth, requireAdmin, async (req, res) => {
+    try {
+        const stats = {};
+        const today = getMadagascarDate();
         
-        stats.todaySales = todayData.count;
-        stats.todayRevenue = todayData.revenue;
+        // Today's sales
+        const todayData = await db.get(
+            `SELECT COUNT(*) as count, COALESCE(SUM(total), 0) as revenue 
+             FROM sales 
+             WHERE DATE(created_at) = $1`,
+            [today]
+        );
         
-        db.get(`SELECT COUNT(*) as count, COALESCE(SUM(total), 0) as revenue 
-                FROM sales 
-                WHERE DATE(created_at) >= DATE('${today}', '-30 days')`, [], (err, monthData) => {
-            if (err) return res.status(500).json({ error: err.message });
-            
-            stats.monthSales = monthData.count;
-            stats.monthRevenue = monthData.revenue;
-            
-            db.get("SELECT COUNT(*) as count FROM products WHERE quantity <= min_stock", [], (err, critical) => {
-                if (err) return res.status(500).json({ error: err.message });
-                
-                stats.criticalStock = critical.count;
-                
-                // Calculate profit
-                db.all(`SELECT si.quantity, si.unit_price, p.purchase_price 
-                        FROM sale_items si 
-                        JOIN products p ON si.product_id = p.id 
-                        JOIN sales s ON si.sale_id = s.id 
-                        WHERE DATE(s.created_at) >= DATE('${today}', '-30 days')`, [], (err, items) => {
-                    if (err) return res.status(500).json({ error: err.message });
-                    
-                    let profit = 0;
-                    (items || []).forEach(item => {
-                        profit += (item.unit_price - (item.purchase_price || 0)) * item.quantity;
-                    });
-                    stats.monthProfit = profit;
-                    
-                    db.get(`SELECT COALESCE(SUM(amount), 0) as total 
-                            FROM expenses 
-                            WHERE status = 'validated' 
-                            AND DATE(created_at) >= DATE('${today}', '-30 days')`, [], (err, expenses) => {
-                        if (err) return res.status(500).json({ error: err.message });
-                        
-                        stats.monthExpenses = expenses.total;
-                        stats.netProfit = profit - expenses.total;
-                        
-                        res.json(stats);
-                    });
-                });
-            });
+        stats.todaySales = parseInt(todayData.count) || 0;
+        stats.todayRevenue = parseFloat(todayData.revenue) || 0;
+        
+        // Monthly sales
+        const monthData = await db.get(
+            `SELECT COUNT(*) as count, COALESCE(SUM(total), 0) as revenue 
+             FROM sales 
+             WHERE created_at >= CURRENT_DATE - INTERVAL '30 days'`
+        );
+        
+        stats.monthSales = parseInt(monthData.count) || 0;
+        stats.monthRevenue = parseFloat(monthData.revenue) || 0;
+        
+        // Critical stock
+        const critical = await db.get(
+            "SELECT COUNT(*) as count FROM products WHERE quantity <= min_stock"
+        );
+        
+        stats.criticalStock = parseInt(critical.count) || 0;
+        
+        // Calculate profit
+        const items = await db.all(
+            `SELECT si.quantity, si.unit_price, p.purchase_price 
+             FROM sale_items si 
+             JOIN products p ON si.product_id = p.id 
+             JOIN sales s ON si.sale_id = s.id 
+             WHERE s.created_at >= CURRENT_DATE - INTERVAL '30 days'`
+        );
+        
+        let profit = 0;
+        (items || []).forEach(item => {
+            profit += (parseFloat(item.unit_price) - (parseFloat(item.purchase_price) || 0)) * parseInt(item.quantity);
         });
-    });
+        stats.monthProfit = profit;
+        
+        // Monthly expenses
+        const expenses = await db.get(
+            `SELECT COALESCE(SUM(amount), 0) as total 
+             FROM expenses 
+             WHERE status = 'validated' 
+             AND created_at >= CURRENT_DATE - INTERVAL '30 days'`
+        );
+        
+        stats.monthExpenses = parseFloat(expenses.total) || 0;
+        stats.netProfit = profit - stats.monthExpenses;
+        
+        res.json(stats);
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
 });
 
-app.get('/api/dashboard/chart', requireAuth, requireAdmin, (req, res) => {
-    const { period } = req.query;
-    const today = getMadagascarDate();
-    
-    const days = period === 'week' ? 7 : 30;
-    
-    const query = `SELECT DATE(created_at) as date, SUM(total) as revenue, COUNT(*) as sales 
-                   FROM sales 
-                   WHERE DATE(created_at) >= DATE('${today}', '-${days} days') 
-                   GROUP BY DATE(created_at) 
-                   ORDER BY date`;
-    
-    db.all(query, [], (err, rows) => {
-        if (err) return res.status(500).json({ error: err.message });
+app.get('/api/dashboard/chart', requireAuth, requireAdmin, async (req, res) => {
+    try {
+        const { period } = req.query;
+        const days = period === 'week' ? 7 : 30;
+        
+        const rows = await db.all(
+            `SELECT DATE(created_at) as date, SUM(total) as revenue, COUNT(*) as sales 
+             FROM sales 
+             WHERE created_at >= CURRENT_DATE - INTERVAL '${days} days' 
+             GROUP BY DATE(created_at) 
+             ORDER BY date`
+        );
+        
         res.json(rows || []);
-    });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
 });
 
-app.get('/api/dashboard/top-products', requireAuth, (req, res) => {
-    const today = getMadagascarDate();
-    
-    db.all(`SELECT si.product_name, SUM(si.quantity) as total_sold, SUM(si.total) as revenue 
-            FROM sale_items si 
-            JOIN sales s ON si.sale_id = s.id 
-            WHERE DATE(s.created_at) >= DATE('${today}', '-30 days') 
-            GROUP BY si.product_id 
-            ORDER BY total_sold DESC 
-            LIMIT 10`, [],
-        (err, rows) => {
-            if (err) return res.status(500).json({ error: err.message });
-            res.json(rows || []);
-        }
-    );
+app.get('/api/dashboard/top-products', requireAuth, async (req, res) => {
+    try {
+        const rows = await db.all(
+            `SELECT si.product_name, SUM(si.quantity) as total_sold, SUM(si.total) as revenue 
+             FROM sale_items si 
+             JOIN sales s ON si.sale_id = s.id 
+             WHERE s.created_at >= CURRENT_DATE - INTERVAL '30 days' 
+             GROUP BY si.product_id 
+             ORDER BY total_sold DESC 
+             LIMIT 10`
+        );
+        
+        res.json(rows || []);
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
 });
 
 // ============ TREASURY / EXPENSES ============
-app.get('/api/expenses', requireAuth, requireAdmin, (req, res) => {
-    db.all('SELECT * FROM expenses ORDER BY created_at DESC', [], (err, rows) => {
-        if (err) return res.status(500).json({ error: err.message });
+app.get('/api/expenses', requireAuth, requireAdmin, async (req, res) => {
+    try {
+        const rows = await db.all('SELECT * FROM expenses ORDER BY created_at DESC');
         res.json(rows);
-    });
-});
-
-app.post('/api/expenses', requireAuth, requireAdmin, (req, res) => {
-    const { description, amount, type, category, status } = req.body;
-    const now = getMadagascarDateTime();
-    
-    if (!description || !amount) {
-        return res.status(400).json({ error: 'Description et montant requis' });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
     }
-    
-    db.run('INSERT INTO expenses (description, amount, type, category, status, created_at) VALUES (?, ?, ?, ?, ?, ?)',
-        [description, amount, type || 'realized', category || '', status || 'pending', now],
-        function(err) {
-            if (err) return res.status(500).json({ error: err.message });
-            res.json({ id: this.lastID, success: true });
-        }
-    );
 });
 
-app.put('/api/expenses/:id', requireAuth, requireAdmin, (req, res) => {
-    const { description, amount, type, category, status } = req.body;
-    
-    db.run('UPDATE expenses SET description = ?, amount = ?, type = ?, category = ?, status = ? WHERE id = ?',
-        [description, amount, type, category, status, req.params.id],
-        function(err) {
-            if (err) return res.status(500).json({ error: err.message });
-            res.json({ success: true });
+app.post('/api/expenses', requireAuth, requireAdmin, async (req, res) => {
+    try {
+        const { description, amount, type, category, status } = req.body;
+        const now = getMadagascarDateTime();
+        
+        if (!description || !amount) {
+            return res.status(400).json({ error: 'Description et montant requis' });
         }
-    );
+        
+        const result = await db.run(
+            'INSERT INTO expenses (description, amount, type, category, status, created_at) VALUES ($1, $2, $3, $4, $5, $6)',
+            [description, amount, type || 'realized', category || '', status || 'pending', now]
+        );
+        
+        res.json({ id: result.lastID, success: true });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
 });
 
-app.delete('/api/expenses/:id', requireAuth, requireAdmin, (req, res) => {
-    db.run('DELETE FROM expenses WHERE id = ?', [req.params.id], function(err) {
-        if (err) return res.status(500).json({ error: err.message });
+app.put('/api/expenses/:id', requireAuth, requireAdmin, async (req, res) => {
+    try {
+        const { description, amount, type, category, status } = req.body;
+        
+        await db.run(
+            'UPDATE expenses SET description = $1, amount = $2, type = $3, category = $4, status = $5 WHERE id = $6',
+            [description, amount, type, category, status, req.params.id]
+        );
+        
         res.json({ success: true });
-    });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.delete('/api/expenses/:id', requireAuth, requireAdmin, async (req, res) => {
+    try {
+        await db.run('DELETE FROM expenses WHERE id = $1', [req.params.id]);
+        res.json({ success: true });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
 });
 
 // ============ FINANCIAL GOALS ============
-app.get('/api/financial-goals', requireAuth, requireAdmin, (req, res) => {
-    db.all('SELECT * FROM financial_goals ORDER BY created_at DESC', [], (err, rows) => {
-        if (err) return res.status(500).json({ error: err.message });
+app.get('/api/financial-goals', requireAuth, requireAdmin, async (req, res) => {
+    try {
+        const rows = await db.all('SELECT * FROM financial_goals ORDER BY created_at DESC');
         res.json(rows);
-    });
-});
-
-app.post('/api/financial-goals', requireAuth, requireAdmin, (req, res) => {
-    const { name, target_amount, deadline } = req.body;
-    const now = getMadagascarDateTime();
-    
-    if (!name || !target_amount) {
-        return res.status(400).json({ error: 'Nom et montant cible requis' });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
     }
-    
-    db.run('INSERT INTO financial_goals (name, target_amount, deadline, created_at) VALUES (?, ?, ?, ?)',
-        [name, target_amount, deadline || '', now],
-        function(err) {
-            if (err) return res.status(500).json({ error: err.message });
-            res.json({ id: this.lastID, success: true });
-        }
-    );
 });
 
-app.put('/api/financial-goals/:id', requireAuth, requireAdmin, (req, res) => {
-    const { name, target_amount, current_amount, deadline, status } = req.body;
-    
-    db.run('UPDATE financial_goals SET name = ?, target_amount = ?, current_amount = ?, deadline = ?, status = ? WHERE id = ?',
-        [name, target_amount, current_amount || 0, deadline, status || 'active', req.params.id],
-        function(err) {
-            if (err) return res.status(500).json({ error: err.message });
-            res.json({ success: true });
+app.post('/api/financial-goals', requireAuth, requireAdmin, async (req, res) => {
+    try {
+        const { name, target_amount, deadline } = req.body;
+        const now = getMadagascarDateTime();
+        
+        if (!name || !target_amount) {
+            return res.status(400).json({ error: 'Nom et montant cible requis' });
         }
-    );
+        
+        const result = await db.run(
+            'INSERT INTO financial_goals (name, target_amount, deadline, created_at) VALUES ($1, $2, $3, $4)',
+            [name, target_amount, deadline || null, now]
+        );
+        
+        res.json({ id: result.lastID, success: true });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
 });
 
-app.delete('/api/financial-goals/:id', requireAuth, requireAdmin, (req, res) => {
-    db.run('DELETE FROM financial_goals WHERE id = ?', [req.params.id], function(err) {
-        if (err) return res.status(500).json({ error: err.message });
+app.put('/api/financial-goals/:id', requireAuth, requireAdmin, async (req, res) => {
+    try {
+        const { name, target_amount, current_amount, deadline, status } = req.body;
+        
+        await db.run(
+            'UPDATE financial_goals SET name = $1, target_amount = $2, current_amount = $3, deadline = $4, status = $5 WHERE id = $6',
+            [name, target_amount, current_amount || 0, deadline, status || 'active', req.params.id]
+        );
+        
         res.json({ success: true });
-    });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.delete('/api/financial-goals/:id', requireAuth, requireAdmin, async (req, res) => {
+    try {
+        await db.run('DELETE FROM financial_goals WHERE id = $1', [req.params.id]);
+        res.json({ success: true });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
 });
 
 // ============ COMPANY CONFIG ============
-app.get('/api/config', requireAuth, (req, res) => {
-    db.get('SELECT * FROM company_config WHERE id = 1', [], (err, row) => {
-        if (err) return res.status(500).json({ error: err.message });
+app.get('/api/config', requireAuth, async (req, res) => {
+    try {
+        const row = await db.get('SELECT * FROM company_config WHERE id = 1');
         res.json(row || {});
-    });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
 });
 
-app.put('/api/config', requireAuth, requireAdmin, upload.single('logo'), (req, res) => {
-    const { name, address, phone, email, website, invoice_header, invoice_footer, currency, tax_rate } = req.body;
-    
-    db.get('SELECT logo FROM company_config WHERE id = 1', [], (err, current) => {
+app.put('/api/config', requireAuth, requireAdmin, upload.single('logo'), async (req, res) => {
+    try {
+        const { name, address, phone, email, website, invoice_header, invoice_footer, currency, tax_rate } = req.body;
+        
+        const current = await db.get('SELECT logo FROM company_config WHERE id = 1');
         let logo = current ? current.logo : null;
+        
         if (req.file) {
-            logo = '/uploads/' + req.file.filename;
+            logo = `data:${req.file.mimetype};base64,${req.file.buffer.toString('base64')}`;
         }
         
-        db.run(`UPDATE company_config SET name = ?, logo = ?, address = ?, phone = ?, email = ?, 
-                website = ?, invoice_header = ?, invoice_footer = ?, currency = ?, tax_rate = ? WHERE id = 1`,
-            [name || 'ORION POS', logo, address || '', phone || '', email || '', 
-             website || '', invoice_header || '', invoice_footer || 'Misaotra tompoko!', currency || 'Ar', tax_rate || 0],
-            function(err) {
-                if (err) return res.status(500).json({ error: err.message });
-                res.json({ success: true });
-            }
+        await db.run(
+            `UPDATE company_config SET name = $1, logo = $2, address = $3, phone = $4, email = $5, 
+             website = $6, invoice_header = $7, invoice_footer = $8, currency = $9, tax_rate = $10 WHERE id = 1`,
+            [name || 'TechFlow POS', logo, address || '', phone || '', email || '', 
+             website || '', invoice_header || '', invoice_footer || 'Misaotra tompoko!', currency || 'Ar', tax_rate || 0]
         );
-    });
+        
+        res.json({ success: true });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
 });
 
 // ============ EXPORTS ============
-app.get('/api/export/clients', requireAuth, (req, res) => {
-    db.all('SELECT name, phone, email, address FROM clients ORDER BY name', [], (err, rows) => {
-        if (err) return res.status(500).json({ error: err.message });
+app.get('/api/export/clients', requireAuth, async (req, res) => {
+    try {
+        const rows = await db.all('SELECT name, phone, email, address FROM clients ORDER BY name');
         
         let csv = '\ufeffNom,Téléphone,Email,Adresse\n';
         (rows || []).forEach(row => {
@@ -1012,103 +1275,100 @@ app.get('/api/export/clients', requireAuth, (req, res) => {
         res.setHeader('Content-Type', 'text/csv; charset=utf-8');
         res.setHeader('Content-Disposition', 'attachment; filename=clients.csv');
         res.send(csv);
-    });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
 });
 
-app.get('/api/export/sales', requireAuth, (req, res) => {
-    const { period } = req.query;
-    const today = getMadagascarDate();
-    let dateFilter = '';
-    
-    if (period === 'today') {
-        dateFilter = `WHERE DATE(s.created_at) = '${today}'`;
-    } else if (period === 'week') {
-        dateFilter = `WHERE DATE(s.created_at) >= DATE('${today}', '-7 days')`;
-    } else if (period === 'month') {
-        dateFilter = `WHERE DATE(s.created_at) >= DATE('${today}', '-30 days')`;
-    }
-    
-    db.all(`SELECT s.invoice_number, s.created_at, c.name as client, s.subtotal, s.discount_value, s.total, u.full_name as vendeur
-            FROM sales s 
-            LEFT JOIN clients c ON s.client_id = c.id 
-            LEFT JOIN users u ON s.user_id = u.id
-            ${dateFilter}
-            ORDER BY s.created_at DESC`, [],
-        (err, rows) => {
-            if (err) return res.status(500).json({ error: err.message });
-            
-            let csv = '\ufeffNuméro Facture,Date,Client,Sous-total,Remise,Total,Vendeur\n';
-            (rows || []).forEach(row => {
-                csv += `"${row.invoice_number}","${row.created_at}","${row.client || 'Anonyme'}","${row.subtotal}","${row.discount_value}","${row.total}","${row.vendeur || ''}"\n`;
-            });
-            
-            res.setHeader('Content-Type', 'text/csv; charset=utf-8');
-            res.setHeader('Content-Disposition', `attachment; filename=ventes_${period || 'all'}.csv`);
-            res.send(csv);
+app.get('/api/export/sales', requireAuth, async (req, res) => {
+    try {
+        const { period } = req.query;
+        const today = getMadagascarDate();
+        let whereClause = '';
+        
+        if (period === 'today') {
+            whereClause = `WHERE DATE(s.created_at) = '${today}'`;
+        } else if (period === 'week') {
+            whereClause = `WHERE s.created_at >= CURRENT_DATE - INTERVAL '7 days'`;
+        } else if (period === 'month') {
+            whereClause = `WHERE s.created_at >= CURRENT_DATE - INTERVAL '30 days'`;
         }
-    );
-});
-
-app.get('/api/export/stock-movements', requireAuth, (req, res) => {
-    const { period } = req.query;
-    const today = getMadagascarDate();
-    let dateFilter = '';
-    
-    if (period === 'today') {
-        dateFilter = `WHERE DATE(sm.created_at) = '${today}'`;
-    } else if (period === 'month') {
-        dateFilter = `WHERE DATE(sm.created_at) >= DATE('${today}', '-30 days')`;
+        
+        const rows = await db.all(
+            `SELECT s.invoice_number, s.created_at, c.name as client, s.subtotal, s.discount_value, s.total, u.full_name as vendeur
+             FROM sales s 
+             LEFT JOIN clients c ON s.client_id = c.id 
+             LEFT JOIN users u ON s.user_id = u.id
+             ${whereClause}
+             ORDER BY s.created_at DESC`
+        );
+        
+        let csv = '\ufeffNuméro Facture,Date,Client,Sous-total,Remise,Total,Vendeur\n';
+        (rows || []).forEach(row => {
+            csv += `"${row.invoice_number}","${row.created_at}","${row.client || 'Anonyme'}","${row.subtotal}","${row.discount_value}","${row.total}","${row.vendeur || ''}"\n`;
+        });
+        
+        res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+        res.setHeader('Content-Disposition', `attachment; filename=ventes_${period || 'all'}.csv`);
+        res.send(csv);
+    } catch (error) {
+        res.status(500).json({ error: error.message });
     }
-    
-    db.all(`SELECT sm.created_at, sm.product_name, sm.movement_type, sm.quantity, sm.reason, u.full_name as utilisateur
-            FROM stock_movements sm 
-            LEFT JOIN users u ON sm.user_id = u.id 
-            ${dateFilter}
-            ORDER BY sm.created_at DESC`, [],
-        (err, rows) => {
-            if (err) return res.status(500).json({ error: err.message });
-            
-            let csv = '\ufeffDate,Produit,Type,Quantité,Raison,Utilisateur\n';
-            (rows || []).forEach(row => {
-                const type = row.movement_type === 'entry' ? 'Entrée' : 'Sortie';
-                csv += `"${row.created_at}","${row.product_name}","${type}","${row.quantity}","${row.reason || ''}","${row.utilisateur || ''}"\n`;
-            });
-            
-            res.setHeader('Content-Type', 'text/csv; charset=utf-8');
-            res.setHeader('Content-Disposition', `attachment; filename=mouvements_stock_${period || 'all'}.csv`);
-            res.send(csv);
-        }
-    );
 });
 
 // ============ CATEGORIES ============
-app.get('/api/categories', requireAuth, (req, res) => {
-    db.all('SELECT DISTINCT category FROM products WHERE category IS NOT NULL AND category != "" ORDER BY category', [], (err, rows) => {
-        if (err) return res.status(500).json({ error: err.message });
+app.get('/api/categories', requireAuth, async (req, res) => {
+    try {
+        const rows = await db.all(
+            'SELECT DISTINCT category FROM products WHERE category IS NOT NULL AND category != \'\' ORDER BY category'
+        );
         res.json((rows || []).map(r => r.category));
-    });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// ============ STATIC FILES ============
+app.get('*', (req, res) => {
+    if (req.path.startsWith('/api')) {
+        return res.status(404).json({ error: 'Endpoint non trouvé' });
+    }
+    res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
 // ============ START SERVER ============
-app.listen(PORT, () => {
-    console.log('');
-    console.log('══════════════════════════════════════════════════════════════');
-    console.log('   ██████╗ ██████╗ ██╗ ██████╗ ███╗   ██╗    ██████╗  ██████╗ ███████╗');
-    console.log('  ██╔═══██╗██╔══██╗██║██╔═══██╗████╗  ██║    ██╔══██╗██╔═══██╗██╔════╝');
-    console.log('  ██║   ██║██████╔╝██║██║   ██║██╔██╗ ██║    ██████╔╝██║   ██║███████╗');
-    console.log('  ██║   ██║██╔══██╗██║██║   ██║██║╚██╗██║    ██╔═══╝ ██║   ██║╚════██║');
-    console.log('  ╚██████╔╝██║  ██║██║╚██████╔╝██║ ╚████║    ██║     ╚██████╔╝███████║');
-    console.log('   ╚═════╝ ╚═╝  ╚═╝╚═╝ ╚═════╝ ╚═╝  ╚═══╝    ╚═╝      ╚═════╝ ╚══════╝');
-    console.log('══════════════════════════════════════════════════════════════');
-    console.log('');
-    console.log(`   🚀 Serveur démarré avec succès!`);
-    console.log(`   🌐 URL: http://localhost:${PORT}`);
-    console.log(`   🔐 Login: http://localhost:${PORT}/login.html`);
-    console.log(`   🕐 Timezone: Madagascar (UTC+3)`);
-    console.log(`   📅 Date/Heure: ${getMadagascarDateTime()}`);
-    console.log('');
-    console.log('══════════════════════════════════════════════════════════════');
-    console.log('   Appuyez sur Ctrl+C pour arrêter le serveur');
-    console.log('══════════════════════════════════════════════════════════════');
-    console.log('');
-});
+async function startServer() {
+  try {
+    await initializeDatabase();
+    
+    app.listen(PORT, () => {
+      console.log('');
+      console.log('══════════════════════════════════════════════════════════════');
+      console.log('  ████████╗███████╗ ██████╗██╗  ██╗███████╗██╗      ██████╗ ██╗    ██╗');
+      console.log('  ╚══██╔══╝██╔════╝██╔════╝██║  ██║██╔════╝██║     ██╔═══██╗██║    ██║');
+      console.log('     ██║   █████╗  ██║     ███████║█████╗  ██║     ██║   ██║██║ █╗ ██║');
+      console.log('     ██║   ██╔══╝  ██║     ██╔══██║██╔══╝  ██║     ██║   ██║██║███╗██║');
+      console.log('     ██║   ███████╗╚██████╗██║  ██║███████╗███████╗╚██████╔╝╚███╔███╔╝');
+      console.log('     ╚═╝   ╚══════╝ ╚═════╝╚═╝  ╚═╝╚══════╝╚══════╝ ╚═════╝  ╚══╝╚══╝');
+      console.log('══════════════════════════════════════════════════════════════');
+      console.log('');
+      console.log(`   🚀 TechFlow POS (Render Edition) démarré avec succès!`);
+      console.log(`   🌐 URL: http://localhost:${PORT}`);
+      console.log(`   🔐 Login: http://localhost:${PORT}/login.html`);
+      console.log(`   📊 Database: PostgreSQL (Render)`);
+      console.log(`   🕐 Timezone: Madagascar (UTC+3)`);
+      console.log(`   📅 Date/Heure: ${getMadagascarDateTime()}`);
+      console.log(`   ⚡ Environment: ${process.env.NODE_ENV || 'development'}`);
+      console.log('');
+      console.log('══════════════════════════════════════════════════════════════');
+      console.log('   Health Check: GET /health');
+      console.log('══════════════════════════════════════════════════════════════');
+      console.log('');
+    });
+  } catch (error) {
+    console.error('❌ Erreur démarrage serveur:', error);
+    process.exit(1);
+  }
+}
+
+startServer();

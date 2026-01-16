@@ -1,7 +1,7 @@
 {
-  "name": "orion-pos",
+  "name": "techflow-pos-render",
   "version": "1.0.0",
-  "description": "Système de Point de Vente Professionnel",
+  "description": "TechFlow POS - Version hébergée sur Render.com",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
@@ -12,9 +12,20 @@
     "express": "^4.18.2",
     "express-session": "^1.17.3",
     "multer": "^1.4.5-lts.1",
-    "sqlite3": "^5.1.6"
+    "pg": "^8.17.1"
   },
   "devDependencies": {
     "nodemon": "^3.0.1"
-  }
+  },
+  "engines": {
+    "node": ">=16.0.0"
+  },
+  "keywords": [
+    "pos",
+    "point-of-sale",
+    "madagascar",
+    "techflow"
+  ],
+  "author": "TechFlow Technologies",
+  "license": "MIT"
 }
