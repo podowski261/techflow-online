@@ -1,0 +1,821 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+     <!-- Favicon TECHFLOW POS -->
+    <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png">
+    <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png">
+    <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png">
+    <link rel="manifest" href="/site.webmanifest">
+    <link rel="icon" type="image/x-icon" href="/favicon.ico">
+    <title>Point de Vente - TechFlow </title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    <link rel="stylesheet" href="/css/style.css">
+    <!-- jsPDF pour génération PDF -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    <style>
+        /* Styles additionnels pour l'aperçu */
+        .preview-container {
+            display: flex;
+            flex-direction: column;
+            gap: 25px;
+        }
+
+        .preview-image {
+            text-align: center;
+            background: #f8fafc;
+            padding: 25px;
+            border-radius: 12px;
+            max-height: 320px;
+            overflow: hidden;
+        }
+
+        .preview-image img {
+            max-height: 220px;
+            object-fit: contain;
+        }
+
+        .no-image {
+            color: #cbd5e1;
+            padding: 50px 0;
+        }
+
+        .preview-info h4 {
+            margin-bottom: 20px;
+            color: #1e293b;
+            text-align: center;
+            font-size: 22px;
+            font-weight: 600;
+        }
+
+        /* Style amélioré pour les détails avec plus d'espace */
+        .preview-details {
+            background: #1e293b;
+            padding: 25px;
+            border-radius: 12px;
+            color: white;
+            margin-bottom: 30px; /* Plus d'espace en bas */
+        }
+
+        .detail-row {
+            display: flex;
+            justify-content: space-between;
+            padding: 14px 0; /* Plus d'espace vertical */
+            border-bottom: 1px solid #334155;
+        }
+
+        .detail-row:last-child {
+            border-bottom: none;
+        }
+
+        .detail-row .label {
+            font-weight: 500;
+            color: #cbd5e1;
+            font-size: 15px;
+        }
+
+        .detail-row .value {
+            color: white;
+            font-weight: 500;
+            font-size: 15px;
+        }
+
+        /* Style amélioré pour les actions avec plus d'espace */
+        .preview-actions {
+            display: flex;
+            gap: 15px;
+            justify-content: center;
+            margin-top: 20px; /* Espace supplémentaire au-dessus des boutons */
+        }
+
+        .preview-actions button {
+            padding: 12px 20px;
+            font-size: 15px;
+            font-weight: 500;
+            border-radius: 8px;
+            min-width: 120px;
+        }
+
+        /* Styles pour les cartes produits */
+        .pos-product-name {
+            cursor: pointer;
+            transition: color 0.2s;
+            text-align: center;
+            padding: 5px 0;
+            font-weight: 500;
+            margin-bottom: 5px;
+            height: 40px;
+            overflow: hidden;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .pos-product-name:hover {
+            color: #3b82f6;
+        }
+
+        .pos-product-price {
+            cursor: pointer;
+            transition: all 0.2s;
+            text-align: center;
+            font-weight: 600;
+            color: #10b981;
+            margin-bottom: 5px;
+            font-size: 16px;
+        }
+
+        .pos-product-price:hover {
+            color: #059669;
+            transform: scale(1.05);
+        }
+
+        .pos-product-stock {
+            text-align: center;
+            font-size: 12px;
+            margin-bottom: 8px;
+            height: 20px;
+        }
+
+        /* Modification pour les boutons en colonne */
+        .pos-product-actions {
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+            margin-top: 5px;
+        }
+
+        .pos-product-actions button {
+            width: 100%;
+            display: block;
+            text-align: center;
+        }
+
+        .pos-product-actions .btn-primary {
+            order: 1;
+        }
+
+        .pos-product-actions .btn-secondary {
+            order: 2;
+        }
+
+        /* Classes de couleur pour le fond sombre */
+        .text-danger {
+            color: #f87171 !important;
+        }
+
+        .text-warning {
+            color: #fbbf24 !important;
+        }
+
+        .text-success {
+            color: #34d399 !important;
+        }
+
+        .text-muted {
+            color: #94a3b8 !important;
+        }
+
+        .mt-2 {
+            margin-top: 0.5rem;
+        }
+
+        .btn-outline-primary {
+            background: transparent;
+            border: 1px solid #3b82f6;
+            color: #3b82f6;
+            transition: all 0.2s;
+        }
+
+        .btn-outline-primary:hover {
+            background: #3b82f6;
+            color: white;
+        }
+
+        .out-of-stock {
+            opacity: 0.7;
+            position: relative;
+        }
+
+        .out-of-stock::after {
+            content: "RUPTURE";
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            background: #ef4444;
+            color: white;
+            padding: 2px 8px;
+            border-radius: 3px;
+            font-size: 10px;
+            font-weight: bold;
+        }
+
+        .pos-product-stock.out {
+            color: #ef4444;
+            font-weight: bold;
+        }
+
+        .pos-product-stock.low {
+            color: #f59e0b;
+            font-weight: bold;
+        }
+    </style>
+</head>
+<body>
+    <div class="app-container">
+        <!-- Sidebar -->
+        <aside class="sidebar">
+            <div class="sidebar-header">
+                <div class="sidebar-logo">
+                    <div class="sidebar-logo-icon">
+                        <i class="fas fa-cash-register"></i>
+                    </div>
+                    <div class="sidebar-logo-text">
+                        <h2>TechFlow</h2>
+                        <span>Point de Vente</span>
+                    </div>
+                </div>
+            </div>
+            
+            <nav class="sidebar-nav">
+                <div class="nav-section">
+                    <div class="nav-section-title">Principal</div>
+                    <a href="/index.html" class="nav-item admin-only">
+                        <i class="fas fa-chart-line"></i>
+                        <span>Dashboard</span>
+                    </a>
+                    <a href="/pos.html" class="nav-item active">
+                        <i class="fas fa-cash-register"></i>
+                        <span>Point de Vente</span>
+                    </a>
+                </div>
+                
+                <div class="nav-section">
+                    <div class="nav-section-title">Gestion</div>
+                    <a href="/inventory.html" class="nav-item">
+                        <i class="fas fa-boxes"></i>
+                        <span>Inventaire</span>
+                    </a>
+                    <a href="/sales.html" class="nav-item">
+                        <i class="fas fa-receipt"></i>
+                        <span>Ventes</span>
+                    </a>
+                    <a href="/clients.html" class="nav-item">
+                        <i class="fas fa-users"></i>
+                        <span>Clients</span>
+                    </a>
+                </div>
+                
+                <div class="nav-section admin-only">
+                    <div class="nav-section-title">Administration</div>
+                    <a href="/treasury.html" class="nav-item">
+                        <i class="fas fa-wallet"></i>
+                        <span>Trésorerie</span>
+                    </a>
+                    <a href="/users.html" class="nav-item">
+                        <i class="fas fa-user-cog"></i>
+                        <span>Utilisateurs</span>
+                    </a>
+                    <a href="/config.html" class="nav-item">
+                        <i class="fas fa-cog"></i>
+                        <span>Configuration</span>
+                    </a>
+                </div>
+            </nav>
+            
+            <div class="sidebar-footer">
+                <div class="user-info">
+                    <div class="user-avatar">AD</div>
+                    <div class="user-details">
+                        <h4>Admin</h4>
+                        <span>Administrateur</span>
+                    </div>
+                </div>
+                <button class="btn-logout" onclick="Auth.logout()">
+                    <i class="fas fa-sign-out-alt"></i>
+                    Déconnexion
+                </button>
+            </div>
+        </aside>
+
+        <!-- Main Content -->
+        <main class="main-content">
+            <header class="page-header">
+                <div class="page-title">
+                    <h1>Point de Vente</h1>
+                    <p>Effectuer une nouvelle vente</p>
+                </div>
+                <div class="page-actions">
+                    <button class="btn btn-secondary" onclick="showPrintHistory()">
+                        <i class="fas fa-history"></i> Historique impressions
+                    </button>
+                    <button class="btn btn-primary admin-only" onclick="Inventory.showAddModal()">
+                        <i class="fas fa-plus"></i> Nouveau produit
+                    </button>
+                </div>
+            </header>
+            
+            <div class="page-body">
+                <div class="pos-container">
+                    <!-- Products Grid -->
+                    <div class="pos-products">
+                        <div class="pos-products-header">
+                            <div class="pos-search">
+                                <i class="fas fa-search"></i>
+                                <input type="text" id="productSearch" placeholder="Rechercher un produit ou scanner code-barre...">
+                            </div>
+                        </div>
+                        
+                        <div class="pos-categories" id="categoriesContainer">
+                            <button class="pos-category active" onclick="Products.setCategory('all')">Tous</button>
+                        </div>
+                        
+                        <div class="pos-products-grid" id="productsGrid">
+                            <div class="text-center text-muted" style="grid-column:1/-1;padding:40px;">
+                                <i class="fas fa-spinner fa-spin fa-2x"></i>
+                                <p class="mt-2">Chargement des produits...</p>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Cart -->
+                    <div class="pos-cart">
+                        <div class="pos-cart-header">
+                            <h3><i class="fas fa-shopping-cart"></i> Panier <span class="badge badge-info" id="cartCount">0</span></h3>
+                            <button class="btn btn-sm btn-secondary" onclick="Cart.clear()">
+                                <i class="fas fa-trash"></i> Vider
+                            </button>
+                        </div>
+                        
+                        <div class="pos-cart-items" id="cartItems">
+                            <div class="pos-cart-empty">
+                                <i class="fas fa-shopping-cart"></i>
+                                <p>Panier vide</p>
+                            </div>
+                        </div>
+                        
+                        <div class="pos-cart-summary" id="cartSummary">
+                            <div class="pos-discount-input">
+                                <select id="discountType">
+                                    <option value="percent">%</option>
+                                    <option value="fixed">Ar</option>
+                                </select>
+                                <input type="number" id="discountValue" placeholder="Remise" min="0">
+                            </div>
+                            
+                            <div class="pos-cart-row">
+                                <span>Sous-total:</span>
+                                <span id="cartSubtotal">0 Ar</span>
+                            </div>
+                            <div class="pos-cart-row">
+                                <span>Remise:</span>
+                                <span id="cartDiscount">- 0 Ar</span>
+                            </div>
+                            <div class="pos-cart-row total">
+                                <span>TOTAL:</span>
+                                <span id="cartTotal">0 Ar</span>
+                            </div>
+                        </div>
+
+                        <div class="pos-cart-section">
+                        <div class="pos-cart-section-header">
+                            <h4><i class="fas fa-credit-card"></i> Mode de paiement</h4>
+                        </div>
+                        <div class="payment-methods">
+                            <div class="payment-method-option">
+                                <input type="radio" name="paymentMethod" value="cash" id="cash" checked>
+                                <label for="cash">
+                                    <i class="fas fa-money-bill-wave"></i>
+                                    <span>Espèces (Cash)</span>
+                                </label>
+                            </div>
+                            <div class="payment-method-option">
+                                <input type="radio" name="paymentMethod" value="mvola" id="mvola">
+                                <label for="mvola">
+                                    <i class="fas fa-mobile-alt"></i>
+                                    <span>Mobile Money (Mvola)</span>
+                                </label>
+                            </div>
+                            <div class="payment-method-option">
+                                <input type="radio" name="paymentMethod" value="airtel_money" id="airtel">
+                                <label for="airtel">
+                                    <i class="fas fa-mobile-alt"></i>
+                                    <span>Airtel Money</span>
+                                </label>
+                            </div>
+                            <div class="payment-method-option">
+                                <input type="radio" name="paymentMethod" value="orange_money" id="orange">
+                                <label for="orange">
+                                    <i class="fas fa-mobile-alt"></i>
+                                    <span>Orange Money</span>
+                                </label>
+                            </div>
+                        </div>
+                    </div>
+                        
+                        <div class="pos-client-section">
+                            <h4><i class="fas fa-user"></i> Client (optionnel)</h4>
+                            <div class="form-row">
+                                <input type="text" id="clientName" class="form-control" placeholder="Nom du client">
+                                <input type="text" id="clientPhone" class="form-control" placeholder="Téléphone">
+                            </div>
+                        </div>
+                        
+                        <div class="pos-cart-actions">
+                            <button class="btn btn-success btn-lg" onclick="Sales.checkout()">
+                                <i class="fas fa-file-pdf"></i> Encaisser & Télécharger PDF
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <!-- Quick Add Product Modal (Admin only) -->
+    <div class="modal-overlay" id="productModal">
+        <div class="modal" style="max-width:600px;">
+            <div class="modal-header">
+                <h3 id="productModalTitle">Nouveau Produit</h3>
+                <button class="modal-close" onclick="Modal.hide('productModal')">&times;</button>
+            </div>
+            <div class="modal-body">
+                <form id="productForm" enctype="multipart/form-data">
+                    <input type="hidden" id="productId" name="id">
+                    
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="productName">Nom du produit *</label>
+                            <input type="text" id="productName" name="name" class="form-control" required>
+                        </div>
+                        <div class="form-group">
+                            <label for="productCategory">Catégorie</label>
+                            <input type="text" id="productCategory" name="category" class="form-control" list="categoryList">
+                            <datalist id="categoryList"></datalist>
+                        </div>
+                    </div>
+                    
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="productPurchasePrice">Prix d'achat (Ar)</label>
+                            <input type="number" id="productPurchasePrice" name="purchase_price" class="form-control" min="0">
+                        </div>
+                        <div class="form-group">
+                            <label for="productSalePrice">Prix de vente (Ar) *</label>
+                            <input type="number" id="productSalePrice" name="sale_price" class="form-control" required min="0">
+                        </div>
+                    </div>
+                    
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="productQuantity">Quantité</label>
+                            <input type="number" id="productQuantity" name="quantity" class="form-control" value="0" min="0">
+                        </div>
+                        <div class="form-group">
+                            <label for="productMinStock">Stock minimum</label>
+                            <input type="number" id="productMinStock" name="min_stock" class="form-control" value="5" min="0">
+                        </div>
+                    </div>
+                    
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="productBarcode">Code-barre</label>
+                            <input type="text" id="productBarcode" name="barcode" class="form-control">
+                        </div>
+                        <div class="form-group">
+                            <label for="productImage">Image</label>
+                            <input type="file" id="productImage" name="image" class="form-control" accept="image/*">
+                            <div id="imagePreview" class="mt-2"></div>
+                        </div>
+                    </div>
+                </form>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="Modal.hide('productModal')">Annuler</button>
+                <button class="btn btn-primary" onclick="Inventory.save()">
+                    <i class="fas fa-save"></i> Enregistrer
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Quick Restock Modal (All users - quantity only) -->
+    <div class="modal-overlay" id="quickRestockModal">
+        <div class="modal" style="max-width:400px;">
+            <div class="modal-header">
+                <h3><i class="fas fa-boxes"></i> Réappro</h3>
+                <button class="modal-close" onclick="Modal.hide('quickRestockModal')">&times;</button>
+            </div>
+            <div class="modal-body">
+                <input type="hidden" id="restockProductId">
+                
+                <div class="restock-product-info" style="background:#f8fafc;padding:15px;border-radius:10px;margin-bottom:20px;">
+                    <h4 id="restockProductName" style="margin-bottom:8px;"></h4>
+                    <p style="color:#64748b;font-size:13px;">
+                        Stock actuel: <strong id="restockCurrentStock">0</strong> unités
+                    </p>
+                </div>
+                
+                <div class="form-group">
+                    <label for="restockQuantity">Quantité à ajouter *</label>
+                    <input type="number" id="restockQuantity" class="form-control" min="1" placeholder="Ex: 10" required>
+                    <p class="form-hint">Cette quantité sera ajoutée au stock actuel</p>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="Modal.hide('quickRestockModal')">Annuler</button>
+                <button class="btn btn-success" onclick="POS.saveRestock()">
+                    <i class="fas fa-plus"></i> Ajouter au stock
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Print History Modal -->
+    <div class="modal-overlay" id="printHistoryModal">
+        <div class="modal" style="max-width:700px;">
+            <div class="modal-header">
+                <h3><i class="fas fa-history"></i> Historique des impressions</h3>
+                <button class="modal-close" onclick="Modal.hide('printHistoryModal')">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="table-container" style="max-height:400px;overflow-y:auto;">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>N° Facture</th>
+                                <th>Date</th>
+                                <th>Client</th>
+                                <th>Total</th>
+                                <th>Action</th>
+                            </tr>
+                        </thead>
+                        <tbody id="printHistoryBody">
+                            <tr>
+                                <td colspan="5" class="text-center text-muted">Chargement...</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Product Preview Modal (Dynamiquement créée) -->
+    <div id="productPreviewContainer"></div>
+
+    <script src="/js/app.js"></script>
+    <script>
+        // POS specific functions
+        const POS = {
+            showRestock(productId, productName, currentStock) {
+                document.getElementById('restockProductId').value = productId;
+                document.getElementById('restockProductName').textContent = productName;
+                document.getElementById('restockCurrentStock').textContent = currentStock;
+                document.getElementById('restockQuantity').value = '';
+                Modal.show('quickRestockModal');
+            },
+            
+            async saveRestock() {
+                const productId = document.getElementById('restockProductId').value;
+                const quantity = document.getElementById('restockQuantity').value;
+                
+                if (!quantity || quantity <= 0) {
+                    Toast.error('Veuillez entrer une quantité valide');
+                    return;
+                }
+                
+                try {
+                    await API.post(`/api/products/${productId}/add-stock`, { 
+                        quantity: parseInt(quantity) 
+                    });
+                    Toast.success('Stock mis à jour avec succès');
+                    Modal.hide('quickRestockModal');
+                    Products.load();
+                } catch (error) {
+                    Toast.error(error.message);
+                }
+            },
+            
+            async showPreview(productId) {
+                try {
+                    const product = await API.get(`/api/products/${productId}`);
+                    
+                    // Créer une modal d'aperçu
+                    const previewHtml = `
+                        <div class="modal-overlay" id="productPreviewModal">
+                            <div class="modal" style="max-width:500px;">
+                                <div class="modal-header">
+                                    <h3>Aperçu du produit</h3>
+                                    <button class="modal-close" onclick="POS.closePreview()">&times;</button>
+                                </div>
+                                <div class="modal-body">
+                                    <div class="preview-container">
+                                        <div class="preview-image">
+                                            ${product.image ? 
+                                                `<img src="${product.image}" alt="${product.name}" style="max-width:100%;border-radius:8px;">` : 
+                                                `<div class="no-image"><i class="fas fa-box fa-4x"></i></div>`
+                                            }
+                                        </div>
+                                        <div class="preview-info">
+                                            <h4>${product.name}</h4>
+                                            <div class="preview-details">
+                                                <div class="detail-row">
+                                                    <span class="label">Prix:</span>
+                                                    <span class="value">${Utils.formatCurrency(product.sale_price)}</span>
+                                                </div>
+                                                <div class="detail-row">
+                                                    <span class="label">Stock:</span>
+                                                    <span class="value ${product.quantity <= 0 ? 'text-danger' : product.quantity <= product.min_stock ? 'text-warning' : ''}">
+                                                        ${product.quantity} unités
+                                                    </span>
+                                                </div>
+                                                ${product.category ? `
+                                                <div class="detail-row">
+                                                    <span class="label">Catégorie:</span>
+                                                    <span class="value">${product.category}</span>
+                                                </div>` : ''}
+                                                ${product.barcode ? `
+                                                <div class="detail-row">
+                                                    <span class="label">Code-barre:</span>
+                                                    <span class="value">${product.barcode}</span>
+                                                </div>` : ''}
+                                                ${product.purchase_price ? `
+                                                <div class="detail-row">
+                                                    <span class="label">Prix d'achat:</span>
+                                                    <span class="value">${Utils.formatCurrency(product.purchase_price)}</span>
+                                                </div>` : ''}
+                                                <div class="detail-row">
+                                                    <span class="label">Marge:</span>
+                                                    <span class="value ${product.purchase_price ? (product.sale_price - product.purchase_price) >= 0 ? 'text-success' : 'text-danger' : ''}">
+                                                        ${product.purchase_price ? Utils.formatCurrency(product.sale_price - product.purchase_price) : 'N/A'}
+                                                    </span>
+                                                </div>
+                                            </div>
+                                            <div class="preview-actions">
+                                                <button class="btn btn-primary" onclick="Cart.add(${JSON.stringify(product).replace(/"/g, '&quot;')}); POS.closePreview()">
+                                                    <i class="fas fa-cart-plus"></i> Ajouter
+                                                </button>
+                                                <button class="btn btn-secondary" onclick="POS.closePreview()">
+                                                    Fermer
+                                                </button>
+                                                ${Auth.isAdmin() ? `
+                                                <button class="btn btn-outline-primary" onclick="Inventory.edit(${product.id}); POS.closePreview()">
+                                                    <i class="fas fa-edit"></i> Modifier
+                                                </button>` : ''}
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    `;
+                    
+                    // Ajouter la modal au DOM
+                    const container = document.getElementById('productPreviewContainer');
+                    container.innerHTML = previewHtml;
+                    
+                    // Afficher la modal
+                    Modal.show('productPreviewModal');
+                    
+                    // Ajouter l'écouteur pour la touche Échap
+                    this.escapeListener = function(e) {
+                        if (e.key === 'Escape') {
+                            POS.closePreview();
+                        }
+                    };
+                    document.addEventListener('keydown', this.escapeListener);
+                    
+                } catch (error) {
+                    Toast.error('Erreur lors du chargement du produit');
+                    console.error(error);
+                }
+            },
+            
+            closePreview() {
+                const modal = document.getElementById('productPreviewModal');
+                if (modal) {
+                    modal.style.display = 'none';
+                    // Retirer l'écouteur
+                    if (this.escapeListener) {
+                        document.removeEventListener('keydown', this.escapeListener);
+                    }
+                }
+            }
+        };
+        
+        // Override Products render pour ajouter l'aperçu SEULEMENT sur l'image
+        const originalProductsRender = Products.render;
+        Products.render = function() {
+            const grid = document.getElementById('productsGrid');
+            if (!grid) return;
+            
+            const filtered = this.filter();
+            
+            if (filtered.length === 0) {
+                grid.innerHTML = `
+                    <div class="text-center text-muted" style="grid-column:1/-1;padding:40px;">
+                        <i class="fas fa-search fa-2x"></i>
+                        <p class="mt-2">Aucun produit trouvé</p>
+                    </div>
+                `;
+                return;
+            }
+            
+            grid.innerHTML = filtered.map(product => {
+                let stockClass = '';
+                let stockText = `Stock: ${product.quantity}`;
+                
+                if (product.quantity <= 0) {
+                    stockClass = 'out';
+                    stockText = 'Rupture';
+                } else if (product.quantity <= product.min_stock) {
+                    stockClass = 'low';
+                    stockText = `Stock faible: ${product.quantity}`;
+                }
+                
+                return `
+                    <div class="pos-product-card ${product.quantity <= 0 ? 'out-of-stock' : ''}">
+                        <div class="pos-product-image" onclick="POS.showPreview(${product.id})" style="cursor:pointer">
+                            ${product.image ? 
+                                `<img src="${product.image}" alt="${product.name}" style="height:120px;object-fit:cover;width:100%;border-radius:4px;">` : 
+                                '<div style="height:120px;display:flex;align-items:center;justify-content:center;background:#f8fafc;"><i class="fas fa-box fa-3x" style="color:#cbd5e1;"></i></div>'
+                            }
+                        </div>
+                        <div class="pos-product-name" title="${product.name}" onclick="Cart.add(${JSON.stringify(product).replace(/"/g, '&quot;')})" style="cursor:pointer">
+                            ${product.name}
+                        </div>
+                        <div class="pos-product-price" onclick="Cart.add(${JSON.stringify(product).replace(/"/g, '&quot;')})" style="cursor:pointer">
+                            ${Utils.formatCurrency(product.sale_price)}
+                        </div>
+                        <div class="pos-product-stock ${stockClass}">${stockText}</div>
+                        <div class="pos-product-actions">
+                            <button class="btn btn-sm btn-primary" onclick="Cart.add(${JSON.stringify(product).replace(/"/g, '&quot;')})" ${product.quantity <= 0 ? 'disabled' : ''}>
+                                <i class="fas fa-cart-plus"></i> Ajouter
+                            </button>
+                            <button class="btn btn-sm btn-secondary" onclick="event.stopPropagation(); POS.showRestock(${product.id}, '${product.name.replace(/'/g, "\\'")}', ${product.quantity})">
+                                <i class="fas fa-plus-circle"></i> Réappro
+                            </button>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+        };
+        
+        function showPrintHistory() {
+            loadPrintHistory();
+            Modal.show('printHistoryModal');
+        }
+        
+        async function loadPrintHistory() {
+            try {
+                const sales = await API.get('/api/sales?period=month');
+                const tbody = document.getElementById('printHistoryBody');
+                
+                if (sales.length === 0) {
+                    tbody.innerHTML = '<tr><td colspan="5" class="text-center text-muted">Aucune facture</td></tr>';
+                    return;
+                }
+                
+                tbody.innerHTML = sales.map(sale => `
+                    <tr>
+                        <td><strong>${sale.invoice_number}</strong></td>
+                        <td>${Utils.formatDateTime(sale.created_at)}</td>
+                        <td>${sale.client_name || 'Anonyme'}</td>
+                        <td>${Utils.formatCurrency(sale.total)}</td>
+                        <td>
+                            <button class="btn btn-sm btn-primary" onclick="Sales.downloadPDF(${sale.id})">
+                                <i class="fas fa-download"></i> PDF
+                            </button>
+                        </td>
+                    </tr>
+                `).join('');
+            } catch (error) {
+                Toast.error('Erreur lors du chargement');
+            }
+        }
+        
+        // Load categories
+        document.addEventListener('DOMContentLoaded', async () => {
+            try {
+                const categories = await API.get('/api/categories');
+                const datalist = document.getElementById('categoryList');
+                if (datalist) {
+                    datalist.innerHTML = categories.map(c => `<option value="${c}">`).join('');
+                }
+                Products.categories = categories;
+                Products.renderCategories();
+            } catch(e) {
+                console.error('Erreur lors du chargement des catégories:', e);
+            }
+        });
+        
+        // Initialiser les produits
+        document.addEventListener('DOMContentLoaded', () => {
+            Products.load();
+        });
+    </script>
+</body>
+</html>
